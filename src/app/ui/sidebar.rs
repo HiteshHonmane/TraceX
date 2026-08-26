@@ -1,256 +1,226 @@
 use super::super::*;
 
-impl App {
+impl TraceXApp {
     pub(super) fn render_sidebar(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("connection_sidebar")
-            .exact_width(216.0)
+            .exact_width(256.0)
             .resizable(false)
             .frame(
                 egui::Frame::none()
                     .fill(theme::BG_INPUT)
-                    .rounding(egui::Rounding {
-                        nw: APP_ROUNDING,
-                        ne: 0.0,
-                        sw: APP_ROUNDING,
-                        se: 0.0,
-                    })
-                    .stroke(Stroke::new(1.0, theme::BORDER)),
+                    .stroke(Stroke::new(1.0_f32, theme::BORDER)),
             )
             .show(ctx, |ui| {
-                let header = ui.allocate_ui_with_layout(
-                    Vec2::new(ui.available_width(), TOP_HEADER_HEIGHT),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.add_space(12.0);
-                        ui.add(
-                            egui::Image::new(&self.logo_texture)
-                                .fit_to_exact_size(Vec2::splat(42.0)),
-                        );
-                        ui.add_space(8.0);
+                egui::Frame::none()
+                    .inner_margin(egui::Margin::symmetric(24.0, 0.0))
+                    .show(ui, |ui| {
+                        ui.add_space(22.0);
                         ui.label(
-                            RichText::new("HI-LOGGER")
-                                .size(15.0)
+                            RichText::new("TraceX")
+                                .size(24.0)
                                 .color(theme::TEXT)
                                 .strong(),
                         );
-                    },
-                );
-                ui.painter().hline(
-                    header.response.rect.x_range(),
-                    header.response.rect.bottom(),
-                    Stroke::new(1.0, theme::BORDER),
-                );
+                        ui.label(
+                            RichText::new(format!("V{}-FOUNDATION", env!("CARGO_PKG_VERSION")))
+                                .monospace()
+                                .size(10.0)
+                                .color(theme::TEXT_DIM)
+                                .strong(),
+                        );
+                        ui.add_space(26.0);
 
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                        let (connection_label, connection_color, connection_text) =
+                            if self.connected {
+                                ("−  Disconnect Device", theme::ERROR, theme::TEXT)
+                            } else {
+                                (
+                                    "+  Connect Device",
+                                    theme::ACCENT,
+                                    Color32::from_rgb(35, 49, 67),
+                                )
+                            };
+                        let connection_ready = self.connected || !self.selected_port.is_empty();
+                        if ui
+                            .add_enabled(
+                                connection_ready,
+                                egui::Button::new(
+                                    RichText::new(connection_label)
+                                        .size(14.0)
+                                        .color(connection_text),
+                                )
+                                .fill(connection_color)
+                                .stroke(Stroke::new(1.0_f32, theme::BORDER))
+                                .rounding(4.0)
+                                .min_size(Vec2::new(ui.available_width(), 48.0)),
+                            )
+                            .clicked()
+                        {
+                            if self.connected {
+                                self.disconnect();
+                            } else {
+                                self.connect();
+                            }
+                        }
+
+                        ui.add_space(26.0);
+                        ui.label(
+                            RichText::new("CONFIGURATION")
+                                .monospace()
+                                .size(10.0)
+                                .color(theme::TEXT_DIM)
+                                .strong(),
+                        );
                         ui.add_space(14.0);
+                        ui.label(
+                            RichText::new("Port")
+                                .monospace()
+                                .size(11.0)
+                                .color(theme::TEXT_DIM)
+                                .strong(),
+                        );
+                        ui.add_space(4.0);
 
-                        egui::Frame::none()
-                            .inner_margin(egui::Margin::symmetric(12.0, 0.0))
-                            .show(ui, |ui| {
-                                let (connection_label, connection_color) = if self.connected {
-                                    ("DISCONNECT", theme::ERROR)
+                        let ports = self.ports.lock().map(|p| p.clone()).unwrap_or_default();
+                        let selected_display = ports
+                            .iter()
+                            .find(|(_, port)| port == &self.selected_port)
+                            .map(|(display, _)| display.clone())
+                            .unwrap_or_else(|| {
+                                if self.selected_port.is_empty() {
+                                    "Select a port".to_string()
                                 } else {
-                                    ("CONNECT", theme::SUCCESS)
-                                };
-                                let connection_ready =
-                                    self.connected || !self.selected_port.is_empty();
-                                if ui
-                                    .add_enabled(
-                                        connection_ready,
-                                        egui::Button::new(
-                                            RichText::new(connection_label)
-                                                .size(12.0)
-                                                .color(connection_color)
-                                                .strong(),
-                                        )
-                                        .min_size(Vec2::new(ui.available_width(), 34.0)),
-                                    )
-                                    .clicked()
-                                {
-                                    if self.connected {
-                                        self.disconnect();
-                                    } else {
-                                        self.connect();
-                                    }
-                                }
-                                ui.add_space(18.0);
-                                ui.label(
-                                    RichText::new("PORT")
-                                        .size(9.0)
-                                        .color(theme::TEXT_MUTED)
-                                        .strong(),
-                                );
-                                ui.add_space(6.0);
-                                let ports =
-                                    self.ports.lock().map(|p| p.clone()).unwrap_or_default();
-                                let port_list_height = if ports.is_empty() {
-                                    24.0
-                                } else {
-                                    (ports.len().min(4) as f32 * 24.0).max(28.0)
-                                };
-                                egui::Frame::none()
-                                    .fill(theme::BG_INPUT)
-                                    .stroke(Stroke::new(1.0, theme::BORDER))
-                                    .rounding(5.0)
-                                    .inner_margin(4.0)
-                                    .show(ui, |ui| {
-                                        egui::ScrollArea::vertical()
-                                            .id_salt("port_scroll")
-                                            .min_scrolled_height(port_list_height)
-                                            .max_height(port_list_height)
-                                            .auto_shrink([false, false])
-                                            .show(ui, |ui| {
-                                                if ports.is_empty() {
-                                                    ui.label(
-                                                        RichText::new("No serial ports detected")
-                                                            .size(10.0)
-                                                            .color(theme::TEXT_MUTED),
-                                                    );
-                                                }
-                                                for (display, port) in ports {
-                                                    let selected = self.selected_port == port;
-                                                    if ui
-                                                        .selectable_label(
-                                                            selected,
-                                                            RichText::new(display)
-                                                                .monospace()
-                                                                .size(10.0),
-                                                        )
-                                                        .clicked()
-                                                        && !self.connected
-                                                    {
-                                                        self.selected_port = port;
-                                                    }
-                                                }
-                                            });
-                                    });
-
-                                ui.add_space(12.0);
-                                ui.label(
-                                    RichText::new("BAUD RATE")
-                                        .size(9.0)
-                                        .color(theme::TEXT_MUTED)
-                                        .strong(),
-                                );
-                                ui.add_space(6.0);
-                                egui::Frame::none()
-                                    .fill(theme::BG_INPUT)
-                                    .stroke(Stroke::new(1.0, theme::BORDER))
-                                    .rounding(5.0)
-                                    .inner_margin(4.0)
-                                    .show(ui, |ui| {
-                                        const BAUD_ROW_HEIGHT: f32 = 24.0;
-                                        const BAUD_VIEWPORT_HEIGHT: f32 = 74.0;
-                                        let center_selected = self.baud_scroll_to_selected;
-                                        self.baud_scroll_to_selected = false;
-                                        let selected_index = BAUD_RATES
-                                            .iter()
-                                            .position(|rate| *rate == self.baud_rate)
-                                            .unwrap_or(0);
-                                        let mut baud_scroll = egui::ScrollArea::vertical()
-                                            .id_salt("baud_scroll")
-                                            .max_height(BAUD_VIEWPORT_HEIGHT)
-                                            .auto_shrink([false, false]);
-                                        if center_selected {
-                                            baud_scroll = baud_scroll.vertical_scroll_offset(
-                                                centered_row_scroll_offset(
-                                                    selected_index,
-                                                    BAUD_RATES.len(),
-                                                    BAUD_ROW_HEIGHT,
-                                                    BAUD_VIEWPORT_HEIGHT,
-                                                ),
-                                            );
-                                        }
-                                        baud_scroll.show(ui, |ui| {
-                                            for rate in BAUD_RATES {
-                                                if ui
-                                                    .add_sized(
-                                                        [ui.available_width(), BAUD_ROW_HEIGHT],
-                                                        egui::Button::new(
-                                                            RichText::new(rate.to_string())
-                                                                .monospace()
-                                                                .size(10.0),
-                                                        )
-                                                        .selected(self.baud_rate == rate),
-                                                    )
-                                                    .clicked()
-                                                    && !self.connected
-                                                {
-                                                    self.baud_rate = rate;
-                                                    self.baud_scroll_to_selected = true;
-                                                }
-                                            }
-                                        });
-                                    });
-
-                                ui.add_space(20.0);
-                                ui.label(
-                                    RichText::new("LOG SETTINGS")
-                                        .size(9.0)
-                                        .color(theme::TEXT_MUTED)
-                                        .strong(),
-                                );
-                                ui.add_space(10.0);
-                                if ui
-                                    .checkbox(&mut self.auto_save_enabled, "Auto-save logs")
-                                    .changed()
-                                {
-                                    self.apply_auto_save_enabled_change();
-                                }
-                                self.render_auto_save_status(ui);
-                                if ui
-                                    .add_sized(
-                                        [ui.available_width(), 30.0],
-                                        egui::Button::new(
-                                            RichText::new("CHOOSE AUTO-SAVE FILE")
-                                                .size(9.0)
-                                                .color(theme::TEXT_DIM),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    self.choose_save_path();
-                                }
-                                let auto_scroll_changed = ui
-                                    .checkbox(&mut self.auto_scroll, "Auto-scroll output")
-                                    .changed();
-                                let live_scroll_frames = live_scroll_frames_after_toggle(
-                                    auto_scroll_changed,
-                                    self.auto_scroll,
-                                );
-                                if auto_scroll_changed {
-                                    self.live_scroll_frames = live_scroll_frames;
-                                }
-                                ui.add_space(12.0);
-                                if ui
-                                    .add_sized(
-                                        [ui.available_width(), 30.0],
-                                        egui::Button::new(
-                                            RichText::new("EXPORT LOGS")
-                                                .size(9.0)
-                                                .color(theme::TEXT_DIM),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    self.export_logs();
+                                    self.selected_port.clone()
                                 }
                             });
+                        ui.add_enabled_ui(!self.connected, |ui| {
+                            egui::ComboBox::from_id_salt("port_combo")
+                                .width(ui.available_width())
+                                .selected_text(
+                                    RichText::new(selected_display)
+                                        .monospace()
+                                        .size(12.0)
+                                        .color(theme::TEXT),
+                                )
+                                .show_ui(ui, |ui| {
+                                    if ports.is_empty() {
+                                        ui.label(
+                                            RichText::new("No serial ports detected")
+                                                .size(11.0)
+                                                .color(theme::TEXT_MUTED),
+                                        );
+                                    }
+                                    for (display, port) in &ports {
+                                        if ui
+                                            .selectable_label(
+                                                self.selected_port == *port,
+                                                RichText::new(display).monospace().size(11.0),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.selected_port = port.clone();
+                                        }
+                                    }
+                                });
+                        });
+
+                        ui.add_space(14.0);
+                        ui.label(
+                            RichText::new("Baud Rate")
+                                .monospace()
+                                .size(11.0)
+                                .color(theme::TEXT_DIM)
+                                .strong(),
+                        );
+                        ui.add_space(4.0);
+                        ui.add_enabled_ui(!self.connected, |ui| {
+                            egui::ComboBox::from_id_salt("baud_combo")
+                                .width(ui.available_width())
+                                .selected_text(
+                                    RichText::new(self.baud_rate.to_string())
+                                        .monospace()
+                                        .size(12.0)
+                                        .color(theme::TEXT),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for rate in BAUD_RATES {
+                                        if ui
+                                            .selectable_label(
+                                                self.baud_rate == rate,
+                                                RichText::new(rate.to_string())
+                                                    .monospace()
+                                                    .size(11.0),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.baud_rate = rate;
+                                        }
+                                    }
+                                });
+                        });
+
+                        ui.add_space(18.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .checkbox(&mut self.auto_save_enabled, "Auto-Save Logs")
+                                .changed()
+                            {
+                                self.apply_auto_save_enabled_change();
+                            }
+                        });
+                        self.render_auto_save_status(ui);
                     });
 
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    ui.add_space(12.0);
-                    let settings_response = ui.add_sized(
-                        [192.0, 34.0],
+                ui.add_space(24.0);
+                ui.separator();
+                ui.add_space(16.0);
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 40.0],
                         egui::Button::new(
-                            RichText::new("⚙  SETTINGS")
-                                .size(10.0)
-                                .color(theme::TEXT_DIM),
-                        ),
+                            RichText::new("Library").size(13.0).color(theme::TEXT_DIM),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::NONE),
+                    )
+                    .on_hover_text("Export the visible log output")
+                    .clicked()
+                {
+                    self.export_logs();
+                }
+                if let Some(error) = self.operation_error.as_ref() {
+                    ui.label(
+                        RichText::new(error)
+                            .monospace()
+                            .size(9.0)
+                            .color(theme::ERROR),
                     );
-                    let popup_id = ui.make_persistent_id("hi_logger_settings_popup");
+                }
+
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                    ui.add_space(10.0);
+                    ui.add_sized(
+                        [ui.available_width(), 38.0],
+                        egui::Button::new(
+                            RichText::new("?   Support")
+                                .size(13.0)
+                                .color(theme::TEXT_DIM),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::NONE),
+                    );
+
+                    let settings_response = ui.add_sized(
+                        [ui.available_width(), 38.0],
+                        egui::Button::new(
+                            RichText::new("⚙   Settings")
+                                .size(13.0)
+                                .color(theme::TEXT_DIM),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::NONE),
+                    );
+                    let popup_id = ui.make_persistent_id("tracex_settings_popup");
                     if settings_response.clicked() {
                         ui.memory_mut(|memory| memory.toggle_popup(popup_id));
                     }
@@ -266,8 +236,6 @@ impl App {
                             self.render_settings(ui);
                         },
                     );
-                    ui.add_space(10.0);
-                    ui.separator();
                 });
             });
     }

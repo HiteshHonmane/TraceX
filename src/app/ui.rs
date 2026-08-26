@@ -4,8 +4,93 @@ mod command_bar;
 mod sidebar;
 mod tabs;
 
-impl eframe::App for App {
+impl TraceXApp {
+    fn render_window_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("window_bar")
+            .exact_height(WINDOW_BAR_HEIGHT)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::BG_INPUT)
+                    .inner_margin(egui::Margin::symmetric(8.0, 0.0)),
+            )
+            .show(ctx, |ui| {
+                let bar_rect = ui.max_rect();
+                let drag_response = ui.interact(
+                    bar_rect,
+                    ui.id().with("window_drag_region"),
+                    egui::Sense::click_and_drag(),
+                );
+                if drag_response.double_clicked() {
+                    let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                } else if drag_response.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+
+                ui.horizontal(|ui| {
+                    for icon in ["▣", "←", "→"] {
+                        ui.add_sized(
+                            [32.0, WINDOW_BAR_HEIGHT],
+                            egui::Button::new(
+                                RichText::new(icon).size(16.0).color(theme::TEXT_DIM),
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE),
+                        );
+                    }
+                    ui.add_space(12.0);
+                    for item in ["File", "Edit", "View", "Help"] {
+                        ui.add_sized(
+                            [44.0, WINDOW_BAR_HEIGHT],
+                            egui::Button::new(
+                                RichText::new(item).size(12.0).color(theme::TEXT_DIM),
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE),
+                        );
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let close = ui.add_sized(
+                            [44.0, WINDOW_BAR_HEIGHT],
+                            egui::Button::new(RichText::new("×").size(17.0).color(theme::TEXT_DIM))
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::NONE),
+                        );
+                        if close.clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        let maximize = ui.add_sized(
+                            [44.0, WINDOW_BAR_HEIGHT],
+                            egui::Button::new(RichText::new("□").size(14.0).color(theme::TEXT_DIM))
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::NONE),
+                        );
+                        if maximize.clicked() {
+                            let maximized =
+                                ctx.input(|input| input.viewport().maximized.unwrap_or(false));
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
+                        let minimize = ui.add_sized(
+                            [44.0, WINDOW_BAR_HEIGHT],
+                            egui::Button::new(RichText::new("—").size(14.0).color(theme::TEXT_DIM))
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::NONE),
+                        );
+                        if minimize.clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                    });
+                });
+            });
+    }
+}
+
+impl eframe::App for TraceXApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.theme_ready {
+            theme::setup(ctx);
+            self.theme_ready = true;
+        }
         self.poll();
         self.check_auto_reconnect();
         ctx.request_repaint_after(Duration::from_millis(50));
@@ -15,6 +100,8 @@ impl eframe::App for App {
         if copy_requested {
             self.copy_selected(ctx);
         }
+
+        self.render_window_bar(ctx);
 
         self.render_sidebar(ctx);
 
@@ -62,7 +149,6 @@ impl eframe::App for App {
                         {
                             self.clear();
                             if let Some(tab) = self.ui_tabs.get_mut(self.active_tab) {
-                                tab.title = format!("{} / MONITOR", self.selected_port);
                                 tab.setup = false;
                             }
                         }
@@ -76,52 +162,41 @@ impl eframe::App for App {
                 let previous_item_spacing_y = ui.spacing().item_spacing.y;
                 ui.spacing_mut().item_spacing.y = 0.0;
                 egui::Frame::none()
-                    .fill(theme::BG_DARK)
-                    .inner_margin(egui::Margin::symmetric(12.0, 0.0))
+                    .fill(theme::BG_PANEL)
+                    .inner_margin(egui::Margin::symmetric(16.0, 0.0))
                     .show(ui, |ui| {
                         ui.allocate_ui_with_layout(
-                            Vec2::new(ui.available_width(), 40.0),
+                            Vec2::new(ui.available_width(), 52.0),
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
                                 ui.add_sized(
-                                    [240.0, 28.0],
+                                    [280.0, 34.0],
                                     egui::TextEdit::singleline(&mut self.search)
-                                        .font(FontId::monospace(10.0))
+                                        .font(FontId::proportional(13.0))
                                         .vertical_align(egui::Align::Center)
-                                        .margin(egui::Margin::symmetric(8.0, 4.0))
-                                        .hint_text("Search log output…"),
+                                        .margin(egui::Margin::symmetric(10.0, 6.0))
+                                        .hint_text("Search logs"),
                                 );
-                                ui.add_space(6.0);
+                                ui.add_space(12.0);
+                                ui.separator();
+                                ui.add_space(12.0);
                                 if ui
                                     .add_sized(
-                                        [62.0, 28.0],
+                                        [66.0, 30.0],
                                         egui::Button::new(
-                                            RichText::new("FILTER")
+                                            RichText::new("⊙  INFO")
                                                 .monospace()
-                                                .size(10.0)
-                                                .color(theme::ACCENT)
-                                                .strong(),
-                                        )
-                                        .selected(self.filter_panel_open)
-                                        .rounding(5.0),
-                                    )
-                                    .clicked()
-                                {
-                                    self.filter_panel_open = !self.filter_panel_open;
-                                }
-                                ui.add_space(4.0);
-                                if ui
-                                    .add_sized(
-                                        [52.0, 28.0],
-                                        egui::Button::new(
-                                            RichText::new("INFO")
-                                                .monospace()
-                                                .size(10.0)
+                                                .size(9.0)
                                                 .color(theme::INFO)
                                                 .strong(),
                                         )
-                                        .selected(self.show_info)
-                                        .rounding(5.0),
+                                        .fill(if self.show_info {
+                                            theme::tint(theme::INFO, 24)
+                                        } else {
+                                            theme::BG_INPUT
+                                        })
+                                                .stroke(Stroke::new(1.0_f32, theme::tint(theme::INFO, 92)))
+                                        .rounding(4.0),
                                     )
                                     .clicked()
                                 {
@@ -129,16 +204,21 @@ impl eframe::App for App {
                                 }
                                 if ui
                                     .add_sized(
-                                        [52.0, 28.0],
+                                        [68.0, 30.0],
                                         egui::Button::new(
-                                            RichText::new("WARN")
+                                            RichText::new("⊙  WARN")
                                                 .monospace()
-                                                .size(10.0)
+                                                .size(9.0)
                                                 .color(theme::WARNING)
                                                 .strong(),
                                         )
-                                        .selected(self.show_warn)
-                                        .rounding(5.0),
+                                        .fill(if self.show_warn {
+                                            theme::tint(theme::WARNING, 24)
+                                        } else {
+                                            theme::BG_INPUT
+                                        })
+                                                .stroke(Stroke::new(1.0_f32, theme::tint(theme::WARNING, 92)))
+                                        .rounding(4.0),
                                     )
                                     .clicked()
                                 {
@@ -146,16 +226,21 @@ impl eframe::App for App {
                                 }
                                 if ui
                                     .add_sized(
-                                        [56.0, 28.0],
+                                        [72.0, 30.0],
                                         egui::Button::new(
-                                            RichText::new("ERROR")
+                                            RichText::new("⊙  ERROR")
                                                 .monospace()
-                                                .size(10.0)
+                                                .size(9.0)
                                                 .color(theme::ERROR)
                                                 .strong(),
                                         )
-                                        .selected(self.show_error)
-                                        .rounding(5.0),
+                                        .fill(if self.show_error {
+                                            theme::tint(theme::ERROR, 24)
+                                        } else {
+                                            theme::BG_INPUT
+                                        })
+                                                .stroke(Stroke::new(1.0_f32, theme::tint(theme::ERROR, 92)))
+                                        .rounding(4.0),
                                     )
                                     .clicked()
                                 {
@@ -166,37 +251,59 @@ impl eframe::App for App {
                                     |ui| {
                                         if ui
                                             .add_sized(
-                                                [52.0, 28.0],
+                                                [36.0, 32.0],
                                                 egui::Button::new(
-                                                    RichText::new("CLEAR")
-                                                        .monospace()
-                                                        .size(10.0)
+                                                    RichText::new("▤")
+                                                        .size(15.0)
                                                         .color(theme::ERROR),
                                                 )
-                                                .rounding(5.0),
+                                                .rounding(4.0),
                                             )
+                                            .on_hover_text("Clear logs")
                                             .clicked()
                                         {
                                             self.clear();
                                         }
                                         if ui
                                             .add_sized(
-                                                [68.0, 28.0],
+                                                [36.0, 32.0],
                                                 egui::Button::new(
-                                                    RichText::new("COPY ALL")
-                                                        .monospace()
-                                                        .size(10.0)
+                                                    RichText::new("▣")
+                                                        .size(14.0)
                                                         .color(theme::TEXT_DIM),
                                                 )
-                                                .rounding(5.0),
+                                                .rounding(4.0),
                                             )
+                                            .on_hover_text("Copy all logs")
                                             .clicked()
                                         {
                                             self.copy_all(ctx);
                                         }
+                                        let follow_clicked = ui
+                                            .add_sized(
+                                                [36.0, 32.0],
+                                                egui::Button::new(
+                                                    RichText::new("↓")
+                                                        .size(16.0)
+                                                        .color(if self.auto_scroll {
+                                                            theme::ACCENT
+                                                        } else {
+                                                            theme::TEXT_MUTED
+                                                        }),
+                                                )
+                                                .fill(theme::BG_INPUT)
+                                            .stroke(Stroke::new(1.0_f32, theme::BORDER)),
+                                            )
+                                            .on_hover_text("Follow incoming logs")
+                                            .clicked();
+                                        if follow_clicked {
+                                            self.auto_scroll = !self.auto_scroll;
+                                            self.live_scroll_frames =
+                                                live_scroll_frames_after_toggle(true, self.auto_scroll);
+                                        }
                                         ui.label(
                                             RichText::new(format!(
-                                                "{:.0}/s  •  {} lines",
+                                                "{:.0}/s  ·  {} lines",
                                                 self.rate,
                                                 self.logs.len()
                                             ))
@@ -216,6 +323,12 @@ impl eframe::App for App {
                     .logs
                     .iter()
                     .filter(|e| self.level_visible(e.level))
+                    .filter(|e| {
+                        let query = self.search.trim();
+                        query.is_empty()
+                            || e.message.to_lowercase().contains(&query.to_lowercase())
+                            || e.raw.to_lowercase().contains(&query.to_lowercase())
+                    })
                     .map(|e| {
                         (
                             e.id,
@@ -330,7 +443,7 @@ impl eframe::App for App {
                     ui.painter().hline(
                         divider_rect.x_range(),
                         divider_rect.center().y,
-                        Stroke::new(1.0, divider_color),
+                                Stroke::new(1.0_f32, divider_color),
                     );
                     if divider_response.dragged() {
                         let pointer_delta = ctx.input(|input| input.pointer.delta().y);
@@ -490,7 +603,7 @@ impl eframe::App for App {
                                             fill,
                                             if selected {
                                                 Stroke::new(
-                                                    1.0,
+                                                    1.0_f32,
                                                     theme::ACCENT.linear_multiply(0.85),
                                                 )
                                             } else {
@@ -501,7 +614,7 @@ impl eframe::App for App {
                                             ui.painter().vline(
                                                 rect.left() + 2.0,
                                                 rect.y_range().shrink(3.0),
-                                                Stroke::new(3.0, theme::ACCENT),
+                                            Stroke::new(3.0_f32, theme::ACCENT),
                                             );
                                         }
                                         let center_y = rect.center().y;
@@ -517,7 +630,7 @@ impl eframe::App for App {
                                             egui::Align2::LEFT_CENTER,
                                             level.label(),
                                             FontId::monospace(9.5),
-                                            level.color(),
+                                            theme::log_level_color(*level),
                                         );
                                         let message_clip = egui::Rect::from_min_max(
                                             egui::pos2(rect.left() + 158.0, rect.top()),

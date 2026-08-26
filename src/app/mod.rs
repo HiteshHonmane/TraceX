@@ -1,3 +1,4 @@
+use crate::domain::log::*;
 use chrono::Local;
 use directories::UserDirs;
 use eframe::egui::{self, Color32, FontId, RichText, Stroke, Vec2};
@@ -11,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const TOP_HEADER_HEIGHT: f32 = 64.0;
-const APP_ROUNDING: f32 = 10.0;
+const WINDOW_BAR_HEIGHT: f32 = 32.0;
+const TOP_HEADER_HEIGHT: f32 = 48.0;
 const LIVE_SCROLL_SETTLE_FRAMES: u8 = 2;
 const COMMAND_HISTORY_LIMIT: usize = 20;
 
@@ -55,7 +56,7 @@ fn register_submitted_command(history: &mut Vec<String>, command: &str) -> Optio
 // ANSI CODE STRIPPER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-impl App {
+impl TraceXApp {
     fn level_visible(&self, level: LogLevel) -> bool {
         match level {
             LogLevel::Info => self.show_info,
@@ -66,10 +67,10 @@ impl App {
     }
 }
 
-mod log;
+mod log_format;
 mod storage;
 
-use log::*;
+use log_format::*;
 use storage::*;
 mod ui;
 
@@ -137,7 +138,7 @@ fn render_primary_log_row(
     let response = egui::Frame::none()
         .fill(tint)
         .stroke(if selected {
-            Stroke::new(1.0, theme::ACCENT.linear_multiply(0.85))
+            Stroke::new(1.0_f32, theme::ACCENT.linear_multiply(0.85))
         } else {
             Stroke::NONE
         })
@@ -163,8 +164,11 @@ fn render_primary_log_row(
                     ),
                 );
                 egui::Frame::none()
-                    .fill(level.color().linear_multiply(0.1))
-                    .stroke(Stroke::new(1.0, level.color().linear_multiply(0.35)))
+                    .fill(theme::log_level_color(level).linear_multiply(0.1))
+                    .stroke(Stroke::new(
+                        1.0_f32,
+                        theme::log_level_color(level).linear_multiply(0.35),
+                    ))
                     .rounding(3.0)
                     .inner_margin(egui::Margin::symmetric(5.0, 1.0))
                     .show(ui, |ui| {
@@ -172,7 +176,7 @@ fn render_primary_log_row(
                             RichText::new(level.label())
                                 .monospace()
                                 .size(9.0)
-                                .color(level.color())
+                                .color(theme::log_level_color(level))
                                 .strong(),
                         );
                     });
@@ -195,7 +199,7 @@ fn render_primary_log_row(
         ui.painter().vline(
             response.rect.left() + 2.0,
             response.rect.y_range().shrink(3.0),
-            Stroke::new(3.0, theme::ACCENT),
+            Stroke::new(3.0_f32, theme::ACCENT),
         );
     }
     response
@@ -208,26 +212,17 @@ const BAUD_RATES: [u32; 8] = [9600, 19200, 38400, 57600, 115200, 230400, 460800,
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub fn run() -> eframe::Result<()> {
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!(
-        "../../assets/hi-logger-logo-transparent.png"
-    ))
-    .expect("bundled HI-Logger logo must be a valid PNG");
-    let logo_image = egui::ColorImage::from(&icon);
-
     eframe::run_native(
-        "HI-Logger",
+        "TraceX",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([1200.0, 800.0])
                 .with_min_inner_size([800.0, 600.0])
-                .with_title("HI-Logger")
-                .with_icon(icon),
+                .with_decorations(false)
+                .with_title("TraceX"),
             ..Default::default()
         },
-        Box::new(move |cc| {
-            theme::setup(&cc.egui_ctx);
-            Ok(Box::new(App::new(&cc.egui_ctx, logo_image)))
-        }),
+        Box::new(move |_cc| Ok(Box::new(TraceXApp::new()))),
     )
 }
 
@@ -236,7 +231,7 @@ struct UiTab {
     setup: bool,
 }
 
-struct App {
+struct TraceXApp {
     // Ports (updated in background) - (display_name, port_name)
     ports: Arc<Mutex<Vec<(String, String)>>>,
     selected_port: String,
@@ -259,6 +254,7 @@ struct App {
     command_input: String,
     command_history: Vec<String>,
     send_newline: bool,
+    auto_clear_command: bool,
 
     // Filter
     search: String,
@@ -278,10 +274,9 @@ struct App {
     auto_save_bytes_written: u64,
     auto_save_sequence: u32,
     auto_save_error: Option<String>,
+    operation_error: Option<String>,
 
     // UI
-    logo_texture: egui::TextureHandle,
-    baud_scroll_to_selected: bool,
     auto_scroll: bool,
     live_scroll_frames: u8,
     ui_tabs: Vec<UiTab>,
@@ -289,6 +284,7 @@ struct App {
     show_info: bool,
     show_warn: bool,
     show_error: bool,
+    theme_ready: bool,
 
     // Stats
     rate: f32,
@@ -299,21 +295,19 @@ struct App {
     reconnect_cooldown: Instant,
 }
 
-impl App {
+impl TraceXApp {
     fn default_log_path() -> PathBuf {
-        if let Some(user_dirs) = UserDirs::new() {
-            if let Some(doc_dir) = user_dirs.document_dir() {
-                return doc_dir.join("HI-Logger.log");
-            }
+        if let Some(user_dirs) = UserDirs::new()
+            && let Some(doc_dir) = user_dirs.document_dir()
+        {
+            return doc_dir.join("TraceX.log");
         }
         // Fallback to current directory if Documents folder not found
-        PathBuf::from("HI-Logger.log")
+        PathBuf::from("TraceX.log")
     }
 
-    fn new(ctx: &egui::Context, logo_image: egui::ColorImage) -> Self {
+    fn new() -> Self {
         let ports = Arc::new(Mutex::new(Self::scan_ports()));
-        let logo_texture =
-            ctx.load_texture("hi_logger_logo", logo_image, egui::TextureOptions::LINEAR);
 
         // Background port scanner
         let ports_clone = Arc::clone(&ports);
@@ -346,6 +340,7 @@ impl App {
             command_input: String::new(),
             command_history: Vec::new(),
             send_newline: true,
+            auto_clear_command: true,
 
             search: String::new(),
             selected: HashSet::new(),
@@ -363,19 +358,19 @@ impl App {
             auto_save_bytes_written: 0,
             auto_save_sequence: 0,
             auto_save_error: None,
+            operation_error: None,
 
-            logo_texture,
-            baud_scroll_to_selected: true,
             auto_scroll: true,
             live_scroll_frames: 0,
             ui_tabs: vec![UiTab {
-                title: "SERIAL / MONITOR".to_string(),
+                title: "Monitor 1".to_string(),
                 setup: false,
             }],
             active_tab: 0,
             show_info: true,
             show_warn: true,
             show_error: true,
+            theme_ready: false,
 
             rate: 0.0,
             rate_count: 0,
@@ -563,20 +558,35 @@ impl App {
             self.open_new_auto_save_file();
         }
 
-        if let Some(file) = self.auto_save_file.as_mut() {
-            if file.write_all(payload.as_bytes()).is_ok() {
-                self.auto_save_bytes_written = self
-                    .auto_save_bytes_written
-                    .saturating_add(payload.len() as u64);
+        let write_result = self
+            .auto_save_file
+            .as_mut()
+            .map(|file| file.write_all(payload.as_bytes()));
+        if let Some(result) = write_result {
+            match result {
+                Ok(()) => {
+                    self.auto_save_bytes_written = self
+                        .auto_save_bytes_written
+                        .saturating_add(payload.len() as u64);
+                }
+                Err(error) => {
+                    self.auto_save_file = None;
+                    self.auto_save_error = Some(format!("Could not save log data: {error}"));
+                }
             }
         }
     }
 
     fn record_log_line(&mut self, line: String) {
-        let entry = LogEntry::new(self.next_id, line);
+        let timestamp = Local::now().format("%H:%M:%S.%3f").to_string();
+        let entry = LogEntry::new(self.next_id, line, timestamp);
         self.next_id += 1;
         self.rate_count += 1;
-        self.append_auto_save_line(&entry.format_line());
+        self.append_auto_save_line(&format_log_line(
+            &entry.timestamp,
+            entry.level,
+            &entry.message,
+        ));
 
         if !self.paused {
             self.logs.push(entry);
@@ -585,6 +595,7 @@ impl App {
 
     fn connect(&mut self) {
         if self.selected_port.is_empty() {
+            self.operation_error = Some("Select a serial port before connecting.".to_owned());
             return;
         }
 
@@ -593,7 +604,10 @@ impl App {
             .open()
         {
             Ok(p) => p,
-            Err(_) => return,
+            Err(error) => {
+                self.operation_error = Some(format!("Could not connect to serial port: {error}"));
+                return;
+            }
         };
 
         let (log_tx, log_rx) = channel();
@@ -613,6 +627,7 @@ impl App {
 
         self.connected = true;
         self.paused = false;
+        self.operation_error = None;
         self.last_connected_port = Some(self.selected_port.clone());
 
         if self.auto_save_enabled && self.auto_save_file.is_none() {
@@ -621,10 +636,10 @@ impl App {
     }
 
     fn disconnect(&mut self) {
-        if let Some(flag) = &self.stop_flag {
-            if let Ok(mut f) = flag.lock() {
-                *f = true;
-            }
+        if let Some(flag) = &self.stop_flag
+            && let Ok(mut f) = flag.lock()
+        {
+            *f = true;
         }
         self.connected = false;
         self.log_rx = None;
@@ -692,10 +707,10 @@ impl App {
     }
 
     fn poll(&mut self) {
-        if let Some(rx) = self.disconnect_rx.as_ref() {
-            if rx.try_recv().is_ok() {
-                self.handle_disconnection();
-            }
+        if let Some(rx) = self.disconnect_rx.as_ref()
+            && rx.try_recv().is_ok()
+        {
+            self.handle_disconnection();
         }
 
         let mut received = Vec::new();
@@ -741,16 +756,17 @@ impl App {
     fn check_auto_reconnect(&mut self) {
         // Auto-reconnect if we were connected and the same port is available again
         // Add a small cooldown to avoid rapid reconnection attempts
-        if !self.connected && self.reconnect_cooldown.elapsed() >= Duration::from_millis(500) {
-            if let Some(ref last_port) = self.last_connected_port {
-                // Check if the port is available
-                let ports = self.ports.lock().map(|p| p.clone()).unwrap_or_default();
-                let port_available = ports.iter().any(|(_, port_name)| port_name == last_port);
+        if !self.connected
+            && self.reconnect_cooldown.elapsed() >= Duration::from_millis(500)
+            && let Some(ref last_port) = self.last_connected_port
+        {
+            // Check if the port is available
+            let ports = self.ports.lock().map(|p| p.clone()).unwrap_or_default();
+            let port_available = ports.iter().any(|(_, port_name)| port_name == last_port);
 
-                if port_available && self.selected_port == *last_port {
-                    // Same port is available again, auto-reconnect
-                    self.connect();
-                }
+            if port_available && self.selected_port == *last_port {
+                // Same port is available again, auto-reconnect
+                self.connect();
             }
         }
     }
@@ -760,13 +776,22 @@ impl App {
             return;
         };
 
-        if let Some(ref tx) = self.serial_tx {
-            let mut data = cmd.as_bytes().to_vec();
-            if self.send_newline {
-                data.push(b'\r');
-                data.push(b'\n');
+        let mut data = cmd.as_bytes().to_vec();
+        if self.send_newline {
+            data.push(b'\r');
+            data.push(b'\n');
+        }
+
+        match self.serial_tx.as_ref() {
+            Some(tx) if tx.send(data).is_ok() => self.operation_error = None,
+            Some(_) => {
+                self.operation_error =
+                    Some("Could not send command because the connection ended.".to_owned());
             }
-            let _ = tx.send(data);
+            None => {
+                self.operation_error =
+                    Some("Connect to a device before sending commands.".to_owned());
+            }
         }
     }
 
@@ -806,7 +831,7 @@ impl App {
             .auto_save_path
             .as_ref()
             .and_then(|p| p.file_name().and_then(|n| n.to_str()))
-            .unwrap_or("HI-Logger.log")
+            .unwrap_or("TraceX.log")
             .to_string();
 
         if let Some(path) = rfd::FileDialog::new()
@@ -827,7 +852,7 @@ impl App {
         }
     }
 
-    fn export_logs(&self) {
+    fn export_logs(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Log", &["log", "txt"])
             .set_file_name("export.log")
@@ -836,10 +861,12 @@ impl App {
             let content = self
                 .filtered()
                 .iter()
-                .map(|e| e.format_line())
+                .map(|entry| format_log_line(&entry.timestamp, entry.level, &entry.message))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let _ = fs::write(path, content);
+            self.operation_error = fs::write(path, content)
+                .err()
+                .map(|error| format!("Could not export logs: {error}"));
         }
     }
 }

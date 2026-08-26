@@ -1,42 +1,40 @@
-# HI-Logger
+# TraceX
 
-A modern, feature-rich serial port logger application for firmware enthusiasts.
+TraceX is a native, performance-first debugging workspace for firmware and
+connected systems. The current release begins with UART logging and establishes
+the architecture for additional transports, large-session search, and reliable
+workspace recovery.
 
-## Features
+## Current Features
 
-- **Real-time Serial Logging**: Connect to serial devices and view logs in real-time
-- **Auto-Reconnect**: Automatically reconnects when device is unplugged and reconnected
-- **Auto-Save Rotation**: Creates precise timestamped files such as `HI-Logger_2026-07-16_14-05-09.log` and rotates at a configurable size limit
-- **Log Filtering**: Search and filter logs by content
-- **Log Selection**: Select individual or multiple logs for copying
-- **Command Interface**: Send commands to connected devices
-- **Command History**: Re-send recent commands with one click
-- **Two-Axis Log Scrolling**: Automatically follows new logs while preserving horizontal access to long lines
-- **Export Logs**: Export filtered logs to file
-- **Modern UI**: Dark theme with color-coded log levels
+- Real-time serial logging
+- Automatic reconnect after device removal and return
+- Timestamped auto-save with configurable rotation
+- Text and severity filtering
+- Multi-row selection and copy
+- Command sending and recent command history
+- Virtualized two-axis log scrolling
+- Filtered log export
+- Native dark desktop interface
+
+New auto-save files use names such as
+`TraceX_2026-07-16_14-05-09.log`. Existing HI-Logger files are not renamed or
+deleted.
 
 ## Usage
 
-1. Select a serial port from the list
-2. Choose baud rate (default: 115200)
-3. Click "Connect"
-4. View logs in real-time
-5. Use search to filter logs
-6. Select logs and copy with Ctrl+C
-7. Send commands via the command input at the bottom
+1. Select a serial port.
+2. Choose a baud rate; the default is 115200.
+3. Select **Connect**.
+4. View, search, filter, and select live logs.
+5. Send commands from the command bar.
+6. Enable auto-save when the session must be retained on disk.
 
-## Auto-Save
+## Current Platform Status
 
-When auto-save is enabled, logs are created in Documents by default with date and time down to seconds. You can:
-- Enable or disable auto-save
-- Choose a custom location and base filename
-- Configure the maximum file size from Settings
-- Automatically rotate to a new uniquely numbered timestamped file when the limit is reached
-
-## Requirements
-
-- Windows 10 or later
-- No installation required - just run the executable
+- Windows 10 or later is the currently validated desktop target.
+- Linux and macOS remain first-class architectural targets and will be added to
+  the verification matrix as packaging work matures.
 
 ## Building from Source
 
@@ -44,22 +42,39 @@ When auto-save is enabled, logs are created in Documents by default with date an
 cargo build --release
 ```
 
-The executable will be in `target/release/hi_logger.exe`
+The Windows executable will be in `target/release/tracex.exe`.
 
-## Source Layout
+## Engineering Documentation
 
-- `src/main.rs` — native executable entry point
-- `src/app/mod.rs` — application state and orchestration
-- `src/app/ui.rs` — central log workspace and top-level frame updates
-- `src/app/ui/sidebar.rs` — connection, port, logging, and settings controls
-- `src/app/ui/tabs.rs` — monitor session tabs
-- `src/app/ui/command_bar.rs` — command input and resend history
-- `src/app/log.rs` — log parsing, formatting, and selection rules
-- `src/app/storage.rs` — timestamped file creation and rotation
-- `src/app/theme.rs` — visual tokens and egui styling
-- `src/app/tests.rs` — focused regression tests
+- [Product vision](doc/vision.md)
+- [Product requirements](doc/01-Product-Requirements.md)
+- [System architecture](doc/02-System-Architecture.md)
+- [Engineering handbook](doc/engineering/README.md)
+- [AI task prompts](doc/prompts/README.md)
+- [Contributor guide](CONTRIBUTING.md)
+- [Engineering decisions](DECISIONS.md)
 
-Before submitting changes, run:
+AI contributors must begin with [AGENTS.md](AGENTS.md).
+
+## Current Source Layout
+
+- `src/main.rs` - native executable entry point
+- `src/domain/log.rs` - framework-independent log types and parsing
+- `src/app/mod.rs` - current application state and orchestration
+- `src/app/log_format.rs` - copy and export text formatting
+- `src/app/ui.rs` - central log workspace and frame updates
+- `src/app/ui/sidebar.rs` - connection, port, logging, and settings controls
+- `src/app/ui/tabs.rs` - monitor-session tabs
+- `src/app/ui/command_bar.rs` - command input and resend history
+- `src/app/storage.rs` - timestamped file creation and rotation
+- `src/app/theme.rs` - visual tokens and egui styling
+- `src/app/tests.rs` - current application regression tests
+
+This is a migration baseline. The target boundaries are defined in
+`doc/02-System-Architecture.md` and are extracted incrementally according to
+`DECISIONS.md`.
+
+## Verification
 
 ```bash
 cargo fmt -- --check
@@ -70,10 +85,10 @@ cargo build --release
 
 ## License
 
-This project is open source and available for firmware enthusiasts.
+A project license will be selected before the first public production release.
 
 ---
 
-**Developed by [Hitesh Honmane](https://www.linkedin.com/in/hitesh-honmane) for firmware enthusiasts**
+**Developed by [Hitesh Honmane](https://www.linkedin.com/in/hitesh-honmane)**
 
-[☕ Buy me a coffee](https://buymeacoffee.com/hitesh_honmane)
+[Buy me a coffee](https://buymeacoffee.com/hitesh_honmane)

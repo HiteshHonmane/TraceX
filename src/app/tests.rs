@@ -32,7 +32,11 @@ fn single_row_copy_uses_the_complete_formatted_line() {
 
     let ctx = egui::Context::default();
     ctx.begin_pass(egui::RawInput::default());
-    ctx.copy_text(entry.format_line());
+    ctx.copy_text(format_log_line(
+        &entry.timestamp,
+        entry.level,
+        &entry.message,
+    ));
     let output = ctx.end_pass();
     assert_eq!(output.platform_output.copied_text, expected);
 }
@@ -69,19 +73,19 @@ fn timestamped_autosave_name_includes_seconds_and_rotation_sequence() {
         .with_ymd_and_hms(2026, 7, 16, 14, 5, 9)
         .single()
         .unwrap();
-    let base = PathBuf::from("logs/HI-Logger.log");
+    let base = PathBuf::from("logs/TraceX.log");
 
     assert_eq!(
         timestamped_log_path(&base, timestamp, 0)
             .file_name()
             .and_then(|name| name.to_str()),
-        Some("HI-Logger_2026-07-16_14-05-09.log")
+        Some("TraceX_2026-07-16_14-05-09.log")
     );
     assert_eq!(
         timestamped_log_path(&base, timestamp, 3)
             .file_name()
             .and_then(|name| name.to_str()),
-        Some("HI-Logger_2026-07-16_14-05-09_003.log")
+        Some("TraceX_2026-07-16_14-05-09_003.log")
     );
 }
 
@@ -226,26 +230,6 @@ fn long_logs_expand_the_horizontal_scrollable_width() {
 }
 
 #[test]
-fn bundled_hi_logger_logo_decodes_for_the_native_window_icon() {
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!(
-        "../../assets/hi-logger-logo-transparent.png"
-    ))
-    .unwrap();
-
-    assert!(icon.width >= 256);
-    assert!(icon.height >= 256);
-    assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
-    let corner_alpha = [
-        icon.rgba[3],
-        icon.rgba[((icon.width - 1) * 4 + 3) as usize],
-        icon.rgba[(((icon.height - 1) * icon.width) * 4 + 3) as usize],
-        icon.rgba[((icon.width * icon.height - 1) * 4 + 3) as usize],
-    ];
-    assert_eq!(corner_alpha, [0, 0, 0, 0]);
-    assert!(icon.rgba.iter().skip(3).step_by(4).any(|alpha| *alpha > 0));
-}
-
-#[test]
 fn timestamped_autosave_file_is_created_immediately_and_never_overwritten() {
     use chrono::TimeZone;
 
@@ -254,8 +238,8 @@ fn timestamped_autosave_file_is_created_immediately_and_never_overwritten() {
         .single()
         .unwrap();
     let test_dir =
-        std::env::temp_dir().join(format!("hi-logger-autosave-test-{}", std::process::id()));
-    let base = test_dir.join("HI-Logger.log");
+        std::env::temp_dir().join(format!("tracex-autosave-test-{}", std::process::id()));
+    let base = test_dir.join("TraceX.log");
 
     let (first_file, first_path, next_sequence) =
         create_timestamped_log_file(&base, timestamp, 0).unwrap();
@@ -263,7 +247,7 @@ fn timestamped_autosave_file_is_created_immediately_and_never_overwritten() {
     assert!(first_path.exists());
     assert_eq!(
         first_path.file_name().and_then(|name| name.to_str()),
-        Some("HI-Logger_2026-07-16_15-04-27.log")
+        Some("TraceX_2026-07-16_15-04-27.log")
     );
 
     let (second_file, second_path, _) = create_timestamped_log_file(&base, timestamp, 0).unwrap();
@@ -273,7 +257,7 @@ fn timestamped_autosave_file_is_created_immediately_and_never_overwritten() {
     assert_eq!(next_sequence, 1);
     assert_eq!(
         second_path.file_name().and_then(|name| name.to_str()),
-        Some("HI-Logger_2026-07-16_15-04-27_001.log")
+        Some("TraceX_2026-07-16_15-04-27_001.log")
     );
 
     let _ = fs::remove_file(first_path);

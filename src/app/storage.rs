@@ -12,7 +12,7 @@ pub(super) fn timestamped_log_path(
         .file_stem()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
-        .unwrap_or("HI-Logger");
+        .unwrap_or("TraceX");
     let extension = base
         .extension()
         .and_then(|value| value.to_str())

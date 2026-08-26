@@ -1,26 +1,18 @@
 use super::super::*;
 
-impl App {
+impl TraceXApp {
     pub(super) fn render_tabs(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("tabs")
             .exact_height(TOP_HEADER_HEIGHT)
             .frame(
                 egui::Frame::none()
-                    .fill(theme::BG_PANEL)
-                    .rounding(egui::Rounding {
-                        nw: 0.0,
-                        ne: APP_ROUNDING,
-                        sw: 0.0,
-                        se: 0.0,
-                    })
-                    .stroke(Stroke::new(1.0, theme::BORDER)),
+                    .fill(theme::BG_INPUT)
+                    .stroke(Stroke::new(1.0_f32, theme::BORDER)),
             )
             .show(ctx, |ui| {
-                const TAB_HEIGHT: f32 = 34.0;
-                let top_padding = ((ui.available_height() - TAB_HEIGHT) * 0.5).max(0.0);
-                ui.add_space(top_padding);
+                const TAB_HEIGHT: f32 = 40.0;
+                ui.add_space(TOP_HEADER_HEIGHT - TAB_HEIGHT);
                 ui.horizontal(|ui| {
-                    ui.add_space(10.0);
                     let tabs: Vec<_> = self
                         .ui_tabs
                         .iter()
@@ -28,54 +20,60 @@ impl App {
                         .map(|(index, tab)| (index, tab.title.clone()))
                         .collect();
                     let mut close_tab = None;
+
                     for (index, title) in tabs {
                         let active = self.active_tab == index;
                         ui.push_id(("monitor_tab", index), |ui| {
                             let (rect, response) = ui.allocate_exact_size(
-                                Vec2::new(132.0, TAB_HEIGHT),
+                                Vec2::new(150.0, TAB_HEIGHT),
                                 egui::Sense::click(),
                             );
                             let fill = if active {
-                                theme::BG_PANEL
+                                theme::BG_DARK
                             } else if response.hovered() {
                                 theme::BG_HOVER
                             } else {
                                 Color32::TRANSPARENT
                             };
                             let stroke = if active {
-                                Stroke::new(1.0, theme::BORDER)
+                                Stroke::new(1.0_f32, theme::BORDER)
                             } else {
                                 Stroke::NONE
                             };
-                            ui.painter().rect(rect, 5.0, fill, stroke);
+                            ui.painter().rect(
+                                rect,
+                                egui::Rounding {
+                                    nw: 6.0,
+                                    ne: 6.0,
+                                    sw: 0.0,
+                                    se: 0.0,
+                                },
+                                fill,
+                                stroke,
+                            );
                             ui.painter().text(
-                                egui::pos2(rect.center().x - 5.0, rect.center().y),
-                                egui::Align2::CENTER_CENTER,
+                                egui::pos2(rect.left() + 20.0, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
                                 title,
-                                FontId::monospace(10.0),
+                                FontId::proportional(13.0),
                                 if active { theme::TEXT } else { theme::TEXT_DIM },
                             );
-                            ui.painter().text(
-                                egui::pos2(rect.right() - 15.0, rect.center().y),
-                                egui::Align2::CENTER_CENTER,
-                                "×",
-                                FontId::proportional(14.0),
-                                theme::TEXT_MUTED,
-                            );
-
-                            let over_close = response
-                                .hover_pos()
-                                .map(|position| position.x >= rect.right() - 30.0)
-                                .unwrap_or(false);
-                            if over_close {
-                                response.clone().on_hover_text("Close tab");
+                            if active || response.hovered() {
+                                ui.painter().text(
+                                    egui::pos2(rect.right() - 18.0, rect.center().y),
+                                    egui::Align2::CENTER_CENTER,
+                                    "×",
+                                    FontId::proportional(14.0),
+                                    theme::TEXT_MUTED,
+                                );
                             }
+
                             if response.clicked() {
-                                if response
+                                let over_close = response
                                     .interact_pointer_pos()
-                                    .map(|position| position.x >= rect.right() - 30.0)
-                                    .unwrap_or(false)
-                                {
+                                    .map(|position| position.x >= rect.right() - 34.0)
+                                    .unwrap_or(false);
+                                if over_close {
                                     close_tab = Some(index);
                                 } else {
                                     self.active_tab = index;
@@ -83,11 +81,12 @@ impl App {
                             }
                         });
                     }
+
                     if let Some(index) = close_tab {
                         self.ui_tabs.remove(index);
                         if self.ui_tabs.is_empty() {
                             self.ui_tabs.push(UiTab {
-                                title: "SERIAL / MONITOR".to_string(),
+                                title: "Monitor 1".to_string(),
                                 setup: false,
                             });
                             self.active_tab = 0;
@@ -97,32 +96,29 @@ impl App {
                             self.active_tab = index.min(self.ui_tabs.len() - 1);
                         }
                     }
-                    let new_window = ui
+
+                    if ui
                         .add_sized(
-                            [32.0, 32.0],
+                            [38.0, 36.0],
                             egui::Button::new(RichText::new("+").size(18.0).color(theme::TEXT_DIM))
                                 .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE)
-                                .rounding(5.0),
+                                .stroke(Stroke::NONE),
                         )
-                        .on_hover_text("Open a new monitor tab");
-                    if new_window.clicked() {
+                        .on_hover_text("Open a new monitor")
+                        .clicked()
+                    {
                         let number = self.ui_tabs.len() + 1;
                         self.ui_tabs.push(UiTab {
-                            title: format!("SERIAL {number} / SETUP"),
+                            title: format!("Monitor {number}"),
                             setup: true,
                         });
                         self.active_tab = self.ui_tabs.len() - 1;
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(16.0);
-                        ui.label(
-                            RichText::new("SERIAL WORKSPACE")
-                                .monospace()
-                                .size(9.0)
-                                .color(theme::TEXT_MUTED),
-                        );
+                        ui.add_space(14.0);
+                        ui.label(RichText::new("◎").size(22.0).color(theme::TEXT_DIM))
+                            .on_hover_text("Profile");
                     });
                 });
             });
