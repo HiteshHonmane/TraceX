@@ -5,6 +5,10 @@ connected systems. The current release begins with UART logging and establishes
 the architecture for additional transports, large-session search, and reliable
 workspace recovery.
 
+The [Windows development preview](https://tracex.abloom-stoat-4996.chatgpt.site)
+is available with a download, checksums and known limitations. It is unsigned
+and is not a production-qualified capture or recovery tool.
+
 ## Current Features
 
 - Real-time serial logging
