@@ -2,8 +2,7 @@ use super::autosave_worker::{
     AutosaveCommand, AutosaveConfig, AutosaveEvent, AutosaveWorker, RecoveryRecord, SubmitError,
     WriteRequest,
 };
-use super::{TraceXApp, theme};
-use eframe::egui::{self, RichText};
+use super::session::SessionRuntime;
 use std::sync::mpsc::TryRecvError;
 
 // Initial queue budgets: at most 64 commands and 64 notifications, plus one
@@ -35,7 +34,7 @@ impl Drop for AutosaveController {
     }
 }
 
-impl TraceXApp {
+impl SessionRuntime {
     /// Queue Finish only after earlier pending work, without waiting for storage.
     pub(super) fn request_auto_save_finish(&mut self) {
         if self.auto_save.finish_requested || self.auto_save.pending.is_some() {
@@ -321,75 +320,7 @@ impl TraceXApp {
         }
     }
 
-    pub(super) fn render_auto_save_status(&mut self, ui: &mut egui::Ui) {
-        if let Some(error) = &self.auto_save_error {
-            ui.label(
-                RichText::new(error)
-                    .monospace()
-                    .size(8.5)
-                    .color(theme::ERROR),
-            );
-        } else if self.auto_save.pending.is_some() {
-            ui.label(
-                RichText::new("Autosave queue full; capture waits for storage.")
-                    .monospace()
-                    .size(8.5)
-                    .color(theme::WARNING),
-            );
-        } else if self.auto_save.stopping {
-            ui.label(
-                RichText::new("Finalizing saved logs...")
-                    .monospace()
-                    .size(8.5)
-                    .color(theme::TEXT_MUTED),
-            );
-        } else if let Some(path) = &self.auto_save_current_path {
-            let label = if self.auto_save_enabled && self.auto_save.active {
-                "Saving to"
-            } else {
-                "Last file"
-            };
-            ui.label(
-                RichText::new(format!("{label}: {}", path.display()))
-                    .monospace()
-                    .size(8.5)
-                    .color(theme::TEXT_MUTED),
-            );
-        } else if self.auto_save.active {
-            ui.label(
-                RichText::new("Opening log file...")
-                    .monospace()
-                    .size(8.5)
-                    .color(theme::TEXT_MUTED),
-            );
-        }
-        self.render_recovery_export(ui);
-    }
-
-    fn render_recovery_export(&mut self, ui: &mut egui::Ui) {
-        if self.auto_save.recovery.is_empty() {
-            return;
-        }
-        ui.label(format!(
-            "{} unsaved payloads retained",
-            self.auto_save.recovery.len()
-        ));
-        if ui
-            .add_enabled(
-                !self.auto_save.recovery_exporting,
-                egui::Button::new("Export unsaved payloads"),
-            )
-            .clicked()
-            && let Some(path) = rfd::FileDialog::new()
-                .add_filter("Recovery JSON", &["json"])
-                .set_file_name("TraceX-recovery.json")
-                .save_file()
-        {
-            self.export_recovery_to(path);
-        }
-    }
-
-    fn export_recovery_to(&mut self, path: std::path::PathBuf) {
+    pub(super) fn export_recovery_to(&mut self, path: std::path::PathBuf) {
         if self.auto_save.recovery_exporting {
             return;
         }
@@ -407,61 +338,59 @@ impl TraceXApp {
         }
     }
 
-    pub(super) fn render_settings(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            RichText::new("LOG FILES")
-                .size(10.0)
-                .color(theme::ACCENT)
-                .strong(),
-        );
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label("File limit");
-            let previous = self.auto_save_limit_mb;
-            if ui
-                .add(
-                    egui::DragValue::new(&mut self.auto_save_limit_mb)
-                        .range(1..=4096)
-                        .suffix(" MB"),
-                )
-                .changed()
-                && self.auto_save.active
-                && !self.submit_auto_save(AutosaveCommand::SetLimit(self.auto_save_limit_mb))
-            {
-                self.auto_save_limit_mb = previous;
-            }
-        });
-        ui.add_space(4.0);
-        if ui.button("Choose save location").clicked() {
-            self.choose_save_path();
-        }
+    /// A bounded storage command is retained locally until the worker accepts it.
+    pub(super) fn auto_save_pending(&self) -> bool {
+        self.auto_save.pending.is_some()
     }
 
-    fn choose_save_path(&mut self) {
+    pub(super) fn unsaved_payload_count(&self) -> usize {
+        self.auto_save.recovery.len()
+    }
+
+    pub(super) fn recovery_exporting(&self) -> bool {
+        self.auto_save.recovery_exporting
+    }
+
+    /// Apply the setting in storage order, retaining the old value on refusal.
+    pub(super) fn set_auto_save_limit_mb(&mut self, limit_mb: u64) -> bool {
+        if !(1..=4096).contains(&limit_mb) {
+            self.operation_error =
+                Some("Autosave file limit must be between 1 and 4096 MB.".to_owned());
+            return false;
+        }
+        let previous = self.auto_save_limit_mb;
+        self.auto_save_limit_mb = limit_mb;
+        if self.auto_save.active && !self.submit_auto_save(AutosaveCommand::SetLimit(limit_mb)) {
+            self.auto_save_limit_mb = previous;
+            return false;
+        }
+        true
+    }
+
+    pub(super) fn auto_save_path_ready(&mut self) -> bool {
         if self.auto_save.pending.is_some() || self.auto_save.stopping {
             self.operation_error = Some(
                 "Wait for autosave to finish queued work before changing its location.".to_owned(),
             );
-            return;
+            return false;
         }
-        let default_name = self
-            .auto_save_path
-            .as_ref()
-            .and_then(|p| p.file_name().and_then(|n| n.to_str()))
-            .unwrap_or("TraceX.log");
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Log", &["log", "txt"])
-            .set_file_name(default_name)
-            .save_file()
-        {
-            let previous_path = self.auto_save_path.replace(path);
-            let previous_sequence = self.auto_save_sequence;
-            self.auto_save_sequence = 0;
-            if self.auto_save_enabled && !self.open_new_auto_save_file() {
-                self.auto_save_path = previous_path;
-                self.auto_save_sequence = previous_sequence;
-            }
+        true
+    }
+
+    /// Change the destination only when prior queued/finalizing work permits it.
+    pub(super) fn set_auto_save_path(&mut self, path: std::path::PathBuf) -> bool {
+        if !self.auto_save_path_ready() {
+            return false;
         }
+        let previous_path = self.auto_save_path.replace(path);
+        let previous_sequence = self.auto_save_sequence;
+        self.auto_save_sequence = 0;
+        if self.auto_save_enabled && !self.open_new_auto_save_file() {
+            self.auto_save_path = previous_path;
+            self.auto_save_sequence = previous_sequence;
+            return false;
+        }
+        true
     }
 }
 
@@ -472,12 +401,12 @@ mod tests;
 #[cfg(test)]
 mod shutdown_tests {
     use super::*;
-    use std::sync::{Arc, Mutex, mpsc};
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     #[test]
     fn finish_waits_for_pending_payload_and_acknowledged_worker_exit() {
-        let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        let mut app = SessionRuntime::new();
         let root = std::env::temp_dir().join(format!("tracex-finish-order-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let (entered_tx, entered_rx) = mpsc::channel();
@@ -545,7 +474,7 @@ mod shutdown_tests {
 
     #[test]
     fn failed_create_is_not_reported_complete_after_finish() {
-        let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        let mut app = SessionRuntime::new();
         let root =
             std::env::temp_dir().join(format!("tracex-finish-failure-{}", std::process::id()));
         std::fs::write(&root, b"a file cannot be a log directory").unwrap();

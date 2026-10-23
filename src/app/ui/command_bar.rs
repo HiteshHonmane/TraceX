@@ -1,95 +1,97 @@
 use super::super::*;
 
-impl TraceXApp {
-    pub(super) fn render_command_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("command_rail").exact_height(116.0)
-            .frame(egui::Frame::none().fill(theme::BG_PANEL).inner_margin(egui::Margin::symmetric(16.0, 10.0)))
-            .show(ctx, |ui| {
-                let rail = ui.max_rect().expand2(Vec2::new(16.0, 10.0));
-                ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(rail.left(), rail.top() + 44.0), rail.right_bottom()), 0.0, theme::BG_COMMAND);
-                ui.painter().hline(rail.x_range(), rail.top(), Stroke::new(1.0_f32, theme::BORDER));
-                ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 32.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.label(RichText::new("HISTORY:").size(10.0).color(theme::TEXT_MUTED));
-                    egui::ScrollArea::horizontal().id_salt("command_history_scroll").auto_shrink([false, true]).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if self.command_history.is_empty() {
-                                ui.label(RichText::new("No command history").size(11.0).color(theme::TEXT_MUTED));
-                            }
-                            let mut recalled = None;
-                            for command in self.command_history.iter().rev().take(8) {
-                                if ui.add(egui::Button::new(RichText::new(command).monospace().size(10.0).color(theme::TEXT_DIM)).rounding(4.0)).on_hover_text("Recall command attempt into editor; Send or Enter executes").clicked() { recalled = Some(command.clone()); }
-                            }
-                            if let Some(command) = recalled { self.recall_command(&command); }
-                        });
+pub(super) fn render_command_bar(session: &mut SessionRuntime, ctx: &egui::Context) {
+    egui::TopBottomPanel::bottom("command_rail").exact_height(116.0)
+        .frame(egui::Frame::none().fill(theme::BG_PANEL).inner_margin(egui::Margin::symmetric(16.0, 10.0)))
+        .show(ctx, |ui| {
+            let rail = ui.max_rect().expand2(Vec2::new(16.0, 10.0));
+            ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(rail.left(), rail.top() + 44.0), rail.right_bottom()), 0.0, theme::BG_COMMAND);
+            ui.painter().hline(rail.x_range(), rail.top(), Stroke::new(1.0_f32, theme::BORDER));
+            ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 32.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.label(RichText::new("HISTORY:").size(10.0).color(theme::TEXT_MUTED));
+                egui::ScrollArea::horizontal().id_salt("command_history_scroll").auto_shrink([false, true]).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if session.command_history.is_empty() {
+                            ui.label(RichText::new("No command history").size(11.0).color(theme::TEXT_MUTED));
+                        }
+                        let mut recalled = None;
+                        for command in session.command_history.iter().rev().take(8) {
+                            if ui.add(egui::Button::new(RichText::new(command).monospace().size(10.0).color(theme::TEXT_DIM)).rounding(4.0)).on_hover_text("Recall command attempt into editor; Send or Enter executes").clicked() { recalled = Some(command.clone()); }
+                        }
+                        if let Some(command) = recalled { recall_command(session, &command); }
                     });
                 });
-                ui.add_space(8.0);
-                self.render_command_controls(ui);
             });
-    }
-
-    fn recall_command(&mut self, command: &str) {
-        self.command_input = command.to_owned();
-    }
-
-    // Return the actual widget rectangles so headless layout tests can guard
-    // containment at the supported minimum window size.
-    fn render_command_controls(&mut self, ui: &mut egui::Ui) -> [egui::Rect; 3] {
-        let mut rects = [egui::Rect::NOTHING; 3];
-        ui.horizontal(|ui| {
-            let editor_width = (ui.available_width() - 190.0).max(80.0);
-            let editor = command_editor(ui, &mut self.command_input, editor_width);
-            rects[0] = editor.frame;
-            if editor.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                self.submit_editor_command();
-            }
-            let ending = ui.add_sized(
-                [74.0, 32.0],
-                egui::Button::new(
-                    RichText::new(if self.send_newline { "NL & CR" } else { "NONE" })
-                        .size(11.0)
-                        .color(theme::TEXT_DIM),
-                ),
-            );
-            rects[1] = ending.rect;
-            if ending.on_hover_text("Toggle command line ending").clicked() {
-                self.send_newline = !self.send_newline;
-            }
-            let send = ui.add_sized(
-                [96.0, 32.0],
-                egui::Button::new(
-                    RichText::new("SEND    ")
-                        .size(12.0)
-                        .color(Color32::from_gray(24))
-                        .strong(),
-                )
-                .fill(Color32::from_gray(134)),
-            );
-            rects[2] = send.rect;
-            super::icons::paint(
-                ui,
-                egui::Rect::from_center_size(
-                    egui::pos2(send.rect.right() - 17.0, send.rect.center().y),
-                    Vec2::splat(14.0),
-                ),
-                super::icons::Icon::Forward,
-                Color32::from_gray(24),
-            );
-            if send
-                .on_hover_text("Send to the current shared capture device")
-                .clicked()
-            {
-                self.submit_editor_command();
-            }
+            ui.add_space(8.0);
+            render_command_controls(session, ui);
         });
-        rects
-    }
+}
 
-    fn submit_editor_command(&mut self) {
-        let command = self.command_input.clone();
-        if self.send_command(&command) && self.auto_clear_command {
-            self.command_input.clear();
+fn recall_command(session: &mut SessionRuntime, command: &str) {
+    session.command_input = command.to_owned();
+}
+
+// Return the actual widget rectangles so headless layout tests can guard
+// containment at the supported minimum window size.
+fn render_command_controls(session: &mut SessionRuntime, ui: &mut egui::Ui) -> [egui::Rect; 3] {
+    let mut rects = [egui::Rect::NOTHING; 3];
+    ui.horizontal(|ui| {
+        let editor_width = (ui.available_width() - 190.0).max(80.0);
+        let editor = command_editor(ui, &mut session.command_input, editor_width);
+        rects[0] = editor.frame;
+        if editor.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            submit_editor_command(session);
         }
+        let ending = ui.add_sized(
+            [74.0, 32.0],
+            egui::Button::new(
+                RichText::new(if session.send_newline {
+                    "NL & CR"
+                } else {
+                    "NONE"
+                })
+                .size(11.0)
+                .color(theme::TEXT_DIM),
+            ),
+        );
+        rects[1] = ending.rect;
+        if ending.on_hover_text("Toggle command line ending").clicked() {
+            session.send_newline = !session.send_newline;
+        }
+        let send = ui.add_sized(
+            [96.0, 32.0],
+            egui::Button::new(
+                RichText::new("SEND    ")
+                    .size(12.0)
+                    .color(Color32::from_gray(24))
+                    .strong(),
+            )
+            .fill(Color32::from_gray(134)),
+        );
+        rects[2] = send.rect;
+        super::icons::paint(
+            ui,
+            egui::Rect::from_center_size(
+                egui::pos2(send.rect.right() - 17.0, send.rect.center().y),
+                Vec2::splat(14.0),
+            ),
+            super::icons::Icon::Forward,
+            Color32::from_gray(24),
+        );
+        if send
+            .on_hover_text("Send to the current shared capture device")
+            .clicked()
+        {
+            submit_editor_command(session);
+        }
+    });
+    rects
+}
+
+fn submit_editor_command(session: &mut SessionRuntime) {
+    let command = session.command_input.clone();
+    if session.send_command(&command) && session.auto_clear_command {
+        session.command_input.clear();
     }
 }
 
@@ -152,8 +154,8 @@ fn command_editor(ui: &mut egui::Ui, text: &mut String, width: f32) -> CommandEd
 mod tests {
     use super::*;
 
-    fn app() -> TraceXApp {
-        TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())))
+    fn app() -> SessionRuntime {
+        SessionRuntime::new()
     }
 
     #[test]
@@ -165,7 +167,7 @@ mod tests {
             "12:00:00",
         )));
         app.selected.insert(7);
-        app.recall_command("AT+STATUS");
+        recall_command(&mut app, "AT+STATUS");
         assert_eq!(app.command_input, "AT+STATUS");
         assert!(app.command_history.is_empty());
         assert!(
@@ -199,7 +201,7 @@ mod tests {
         let mut app = app();
         app.command_input = "AT+STATUS".to_owned();
         app.auto_clear_command = true;
-        app.submit_editor_command();
+        submit_editor_command(&mut app);
         assert_eq!(app.command_input, "AT+STATUS");
     }
 
@@ -223,7 +225,7 @@ mod tests {
                         .show(ctx, |_| {});
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let available = ui.available_rect_before_wrap();
-                        let rects = app.render_command_controls(ui);
+                        let rects = render_command_controls(&mut app, ui);
                         for rect in rects {
                             assert!(
                                 available.contains_rect(rect),

@@ -1,259 +1,268 @@
 use super::super::*;
 use super::icons::{self, Icon};
 
-impl TraceXApp {
-    pub(super) fn render_sidebar(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("connection_sidebar")
-            .exact_width(256.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::none()
-                    .fill(theme::BG_SIDEBAR)
-                    .inner_margin(egui::Margin::symmetric(24.0, 0.0)),
-            )
-            .show(ctx, |ui| {
-                let content_height = (ui.available_height() - 170.0).max(200.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("connection_configuration")
-                    .max_height(content_height)
-                    .show(ui, |ui| self.render_connection_configuration(ui));
-                self.render_sidebar_footer(ui);
-            });
-    }
+pub(super) fn render_sidebar(
+    session: &mut SessionRuntime,
+    ports: &[(String, String)],
+    ctx: &egui::Context,
+) {
+    egui::SidePanel::left("connection_sidebar")
+        .exact_width(256.0)
+        .resizable(false)
+        .frame(
+            egui::Frame::none()
+                .fill(theme::BG_SIDEBAR)
+                .inner_margin(egui::Margin::symmetric(24.0, 0.0)),
+        )
+        .show(ctx, |ui| {
+            let content_height = (ui.available_height() - 170.0).max(200.0);
+            egui::ScrollArea::vertical()
+                .id_salt("connection_configuration")
+                .max_height(content_height)
+                .show(ui, |ui| render_connection_configuration(session, ports, ui));
+            render_sidebar_footer(session, ui);
+        });
+}
 
-    fn render_connection_configuration(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(18.0);
-        ui.label(
-            RichText::new("TraceX")
-                .font(theme::medium_font(31.0))
-                .line_height(Some(28.0))
-                .extra_letter_spacing(0.45)
-                .color(Color32::WHITE),
-        );
-        ui.add_space(38.0);
-        let ready = self.connected || !self.selected_port.is_empty();
-        let label = if self.connected {
-            "Disconnect Device"
+fn render_connection_configuration(
+    session: &mut SessionRuntime,
+    ports: &[(String, String)],
+    ui: &mut egui::Ui,
+) {
+    ui.add_space(18.0);
+    ui.label(
+        RichText::new("TraceX")
+            .font(theme::medium_font(31.0))
+            .line_height(Some(28.0))
+            .extra_letter_spacing(0.45)
+            .color(Color32::WHITE),
+    );
+    ui.add_space(38.0);
+    let ready = session.connected || !session.selected_port.is_empty();
+    let label = if session.connected {
+        "Disconnect Device"
+    } else {
+        "+  Connect Device"
+    };
+    let color = if session.connected {
+        theme::ERROR
+    } else {
+        theme::TEXT
+    };
+    let connection = ui.add_enabled(
+        ready,
+        egui::Button::new(RichText::new(label).size(13.0).color(color))
+            .fill(Color32::from_gray(42))
+            .stroke(Stroke::new(1.0_f32, theme::BORDER))
+            .min_size(Vec2::new(ui.available_width(), 38.0)),
+    );
+    if connection
+        .on_disabled_hover_text("Select a detected port first. Ports refresh automatically.")
+        .clicked()
+    {
+        if session.connected {
+            session.disconnect();
         } else {
-            "+  Connect Device"
-        };
-        let color = if self.connected {
-            theme::ERROR
-        } else {
-            theme::TEXT
-        };
-        let connection = ui.add_enabled(
-            ready,
-            egui::Button::new(RichText::new(label).size(13.0).color(color))
-                .fill(Color32::from_gray(42))
-                .stroke(Stroke::new(1.0_f32, theme::BORDER))
-                .min_size(Vec2::new(ui.available_width(), 38.0)),
-        );
-        if connection
-            .on_disabled_hover_text("Select a detected port first. Ports refresh automatically.")
-            .clicked()
-        {
-            if self.connected {
-                self.disconnect();
+            session.connect();
+        }
+    }
+    ui.add_space(28.0);
+    ui.label(
+        RichText::new("CONFIGURATION")
+            .size(10.0)
+            .color(theme::TEXT_MUTED),
+    );
+    ui.add_space(12.0);
+    render_port_configuration(session, ports, ui);
+    render_sidebar_status(session, ui);
+}
+
+fn render_port_configuration(
+    session: &mut SessionRuntime,
+    ports: &[(String, String)],
+    ui: &mut egui::Ui,
+) {
+    ui.label(
+        RichText::new("Port")
+            .font(theme::medium_font(12.0))
+            .line_height(Some(16.0))
+            .color(theme::TEXT),
+    );
+    let selected_display = ports
+        .iter()
+        .find(|(_, port)| port == &session.selected_port)
+        .map(|(display, _)| display.clone())
+        .unwrap_or_else(|| {
+            if session.selected_port.is_empty() {
+                "Select a port".to_owned()
             } else {
-                self.connect();
+                session.selected_port.clone()
             }
-        }
-        ui.add_space(28.0);
-        ui.label(
-            RichText::new("CONFIGURATION")
-                .size(10.0)
-                .color(theme::TEXT_MUTED),
-        );
-        ui.add_space(12.0);
-        self.render_port_configuration(ui);
-        self.render_sidebar_status(ui);
-    }
-
-    fn render_port_configuration(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            RichText::new("Port")
-                .font(theme::medium_font(12.0))
-                .line_height(Some(16.0))
-                .color(theme::TEXT),
-        );
-        let ports = self.ports.lock().map(|p| p.clone()).unwrap_or_default();
-        let selected_display = ports
-            .iter()
-            .find(|(_, port)| port == &self.selected_port)
-            .map(|(display, _)| display.clone())
-            .unwrap_or_else(|| {
-                if self.selected_port.is_empty() {
-                    "Select a port".to_owned()
-                } else {
-                    self.selected_port.clone()
-                }
-            });
-        ui.add_enabled_ui(!self.connected, |ui| {
-            ui.spacing_mut().interact_size.y = 34.0;
-            egui::ComboBox::from_id_salt("port_combo")
-                .width(ui.available_width())
-                .selected_text(
-                    RichText::new(&selected_display)
-                        .size(14.0)
-                        .line_height(Some(20.0))
-                        .color(theme::TEXT),
-                )
-                .show_ui(ui, |ui| {
-                    if ports.is_empty() {
-                        ui.label("No serial ports detected");
-                    }
-                    for (display, port) in &ports {
-                        if ui
-                            .selectable_label(self.selected_port == *port, display)
-                            .clicked()
-                        {
-                            self.selected_port = port.clone();
-                        }
-                    }
-                })
-                .response
-                .on_hover_text(&selected_display);
         });
-        ui.add_space(14.0);
-        ui.label(
-            RichText::new("Baud Rate")
-                .font(theme::medium_font(12.0))
-                .line_height(Some(16.0))
-                .color(theme::TEXT),
-        );
-        ui.add_enabled_ui(!self.connected, |ui| {
-            ui.spacing_mut().interact_size.y = 34.0;
-            egui::ComboBox::from_id_salt("baud_combo")
-                .width(ui.available_width())
-                .selected_text(
-                    RichText::new(self.baud_rate.to_string())
-                        .size(14.0)
-                        .line_height(Some(20.0))
-                        .color(theme::TEXT),
-                )
-                .show_ui(ui, |ui| {
-                    for rate in BAUD_RATES {
-                        if ui
-                            .selectable_label(self.baud_rate == rate, rate.to_string())
-                            .clicked()
-                        {
-                            self.baud_rate = rate;
-                        }
-                    }
-                });
-        });
-    }
-
-    fn render_sidebar_status(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(18.0);
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("Auto-Save Logs")
+    ui.add_enabled_ui(!session.connected, |ui| {
+        ui.spacing_mut().interact_size.y = 34.0;
+        egui::ComboBox::from_id_salt("port_combo")
+            .width(ui.available_width())
+            .selected_text(
+                RichText::new(&selected_display)
                     .size(14.0)
-                    .color(theme::TEXT_DIM),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if autosave_toggle(ui, &mut self.auto_save_enabled).changed() {
-                    self.apply_auto_save_enabled_change();
+                    .line_height(Some(20.0))
+                    .color(theme::TEXT),
+            )
+            .show_ui(ui, |ui| {
+                if ports.is_empty() {
+                    ui.label("No serial ports detected");
+                }
+                for (display, port) in ports {
+                    if ui
+                        .selectable_label(session.selected_port == *port, display)
+                        .clicked()
+                    {
+                        session.selected_port = port.clone();
+                    }
+                }
+            })
+            .response
+            .on_hover_text(&selected_display);
+    });
+    ui.add_space(14.0);
+    ui.label(
+        RichText::new("Baud Rate")
+            .font(theme::medium_font(12.0))
+            .line_height(Some(16.0))
+            .color(theme::TEXT),
+    );
+    ui.add_enabled_ui(!session.connected, |ui| {
+        ui.spacing_mut().interact_size.y = 34.0;
+        egui::ComboBox::from_id_salt("baud_combo")
+            .width(ui.available_width())
+            .selected_text(
+                RichText::new(session.baud_rate.to_string())
+                    .size(14.0)
+                    .line_height(Some(20.0))
+                    .color(theme::TEXT),
+            )
+            .show_ui(ui, |ui| {
+                for rate in BAUD_RATES {
+                    if ui
+                        .selectable_label(session.baud_rate == rate, rate.to_string())
+                        .clicked()
+                    {
+                        session.baud_rate = rate;
+                    }
                 }
             });
-        });
-        self.render_auto_save_status(ui);
-        for error in [&self.operation_error, &self.capture_error]
-            .into_iter()
-            .flatten()
-        {
-            ui.add(egui::Label::new(RichText::new(error).size(13.0).color(theme::ERROR)).wrap());
-        }
-        if self.session_archive_busy() {
-            ui.label(
-                RichText::new("Session file operation in progress…")
-                    .size(13.0)
-                    .color(theme::TEXT_DIM),
-            );
-        }
-    }
+    });
+}
 
-    fn render_sidebar_footer(&mut self, ui: &mut egui::Ui) {
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-            ui.add_space(12.0);
-            self.render_support_popup(ui);
-            self.render_settings_popup(ui);
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
-            let library = icons::navigation(ui, Icon::Folder, "Library");
-            let library_id = ui.make_persistent_id("session_library");
-            if library.clicked() {
-                ui.memory_mut(|m| m.toggle_popup(library_id));
+fn render_sidebar_status(session: &mut SessionRuntime, ui: &mut egui::Ui) {
+    ui.add_space(18.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Auto-Save Logs")
+                .size(14.0)
+                .color(theme::TEXT_DIM),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if autosave_toggle(ui, &mut session.auto_save_enabled).changed() {
+                session.apply_auto_save_enabled_change();
             }
-            egui::popup::popup_above_or_below_widget(
-                ui,
-                library_id,
-                &library,
-                egui::AboveOrBelow::Above,
-                egui::popup::PopupCloseBehavior::CloseOnClickOutside,
-                |ui| {
-                    ui.set_min_width(208.0);
-                    self.render_session_actions(ui);
-                    if ui.button("Export filtered text…").clicked() {
-                        ui.close_menu();
-                        self.export_logs();
-                    }
-                },
-            );
         });
+    });
+    super::autosave::render_auto_save_status(session, ui);
+    for error in [&session.operation_error, &session.capture_error]
+        .into_iter()
+        .flatten()
+    {
+        ui.add(egui::Label::new(RichText::new(error).size(13.0).color(theme::ERROR)).wrap());
     }
+    if session.session_archive_busy() {
+        ui.label(
+            RichText::new("Session file operation in progress…")
+                .size(13.0)
+                .color(theme::TEXT_DIM),
+        );
+    }
+}
 
-    fn render_support_popup(&mut self, ui: &mut egui::Ui) {
-        let support = icons::navigation(ui, Icon::Support, "Support");
-        let popup_id = ui.make_persistent_id("support_help");
-        if support.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(popup_id));
+fn render_sidebar_footer(session: &mut SessionRuntime, ui: &mut egui::Ui) {
+    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+        ui.add_space(12.0);
+        render_support_popup(ui);
+        render_settings_popup(session, ui);
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
+        let library = icons::navigation(ui, Icon::Folder, "Library");
+        let library_id = ui.make_persistent_id("session_library");
+        if library.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(library_id));
         }
         egui::popup::popup_above_or_below_widget(
             ui,
-            popup_id,
-            &support,
+            library_id,
+            &library,
             egui::AboveOrBelow::Above,
             egui::popup::PopupCloseBehavior::CloseOnClickOutside,
             |ui| {
-                ui.set_max_width(300.0);
-                ui.label(format!(
-                    "TraceX {} · development preview",
-                    env!("CARGO_PKG_VERSION")
-                ));
-                ui.label("Select a port and baud rate, then connect. Monitor views share one capture and command destination.");
-                ui.label("Disconnect before saving or opening a session. Save preserves all retained records; text export follows current filters.");
+                ui.set_min_width(208.0);
+                super::menus::render_session_actions(session, ui);
+                if ui.button("Export filtered text…").clicked() {
+                    ui.close_menu();
+                    super::session_actions::choose_export_logs(session);
+                }
             },
         );
-    }
+    });
+}
 
-    fn render_settings_popup(&mut self, ui: &mut egui::Ui) {
-        let settings = icons::navigation(ui, Icon::Settings, "Settings");
-        let popup_id = ui.make_persistent_id("tracex_settings_popup");
-        if settings.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(popup_id));
-        }
-        egui::popup::popup_above_or_below_widget(
-            ui,
-            popup_id,
-            &settings,
-            egui::AboveOrBelow::Above,
-            egui::popup::PopupCloseBehavior::CloseOnClickOutside,
-            |ui| {
-                ui.set_min_width(230.0);
-                ui.set_max_width(270.0);
-                ui.checkbox(
-                    &mut self.auto_clear_command,
-                    "Clear command after accepted send",
-                );
-                ui.separator();
-                self.render_settings(ui);
-            },
-        );
+fn render_support_popup(ui: &mut egui::Ui) {
+    let support = icons::navigation(ui, Icon::Support, "Support");
+    let popup_id = ui.make_persistent_id("support_help");
+    if support.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
     }
+    egui::popup::popup_above_or_below_widget(
+        ui,
+        popup_id,
+        &support,
+        egui::AboveOrBelow::Above,
+        egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+        |ui| {
+            ui.set_max_width(300.0);
+            ui.label(format!(
+                "TraceX {} · development preview",
+                env!("CARGO_PKG_VERSION")
+            ));
+            ui.label("Select a port and baud rate, then connect. Monitor views share one capture and command destination.");
+            ui.label("Disconnect before saving or opening a session. Save preserves all retained records; text export follows current filters.");
+        },
+    );
+}
+
+fn render_settings_popup(session: &mut SessionRuntime, ui: &mut egui::Ui) {
+    let settings = icons::navigation(ui, Icon::Settings, "Settings");
+    let popup_id = ui.make_persistent_id("tracex_settings_popup");
+    if settings.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+    egui::popup::popup_above_or_below_widget(
+        ui,
+        popup_id,
+        &settings,
+        egui::AboveOrBelow::Above,
+        egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+        |ui| {
+            ui.set_min_width(230.0);
+            ui.set_max_width(270.0);
+            ui.checkbox(
+                &mut session.auto_clear_command,
+                "Clear command after accepted send",
+            );
+            ui.separator();
+            super::autosave::render_settings(session, ui);
+        },
+    );
 }
 
 fn autosave_toggle(ui: &mut egui::Ui, enabled: &mut bool) -> egui::Response {

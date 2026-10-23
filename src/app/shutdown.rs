@@ -123,7 +123,7 @@ impl ShutdownCoordinator {
     }
 }
 
-impl super::TraceXApp {
+impl super::session::SessionRuntime {
     pub(super) fn request_shutdown(&mut self, now: Instant) {
         if self.shutdown.request(now) {
             self.disconnect();
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn text_autosave_finishes_before_unsaved_session_confirmation() {
         use std::sync::{Arc, Mutex};
-        let mut app = super::super::TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        let mut app = super::super::SessionRuntime::new();
         let root =
             std::env::temp_dir().join(format!("tracex-orderly-close-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -290,8 +290,7 @@ mod tests {
 
     #[test]
     fn close_during_session_save_waits_for_original_history_to_return() {
-        use std::sync::{Arc, Mutex};
-        let mut app = super::super::TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        let mut app = super::super::SessionRuntime::new();
         let root =
             std::env::temp_dir().join(format!("tracex-close-session-save-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -331,8 +330,7 @@ mod tests {
 
     #[test]
     fn dirty_history_without_autosave_requires_explicit_session_discard() {
-        use std::sync::{Arc, Mutex};
-        let mut app = super::super::TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        let mut app = super::super::SessionRuntime::new();
         assert!(!app.history_dirty);
         app.record_log_line("only retained in memory".to_owned());
         assert!(app.history_dirty);
@@ -370,8 +368,7 @@ mod tests {
 
     #[test]
     fn recovered_capacity_stop_and_saved_tail_close_without_erasing_continuity_warning() {
-        use std::sync::{Arc, Mutex};
-        let mut app = super::super::TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        let mut app = super::super::SessionRuntime::new();
         app.history = crate::domain::history_budget::HistoryBudget::new(1, usize::MAX);
         let (feed, inbox) = super::super::capture::CaptureInbox::test_channel();
         feed.send("first record".into()).unwrap();

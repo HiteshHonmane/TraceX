@@ -10,6 +10,19 @@ domain behavior while `src/app/` temporarily contains UI, storage, theme, and
 application orchestration modules. Treat this as a working migration baseline,
 not as the final architecture described in `doc/02-System-Architecture.md`.
 
+The native application shell owns port discovery and shared-view tabs. Its one
+[`SessionRuntime`](../../src/app/session.rs) owns capture, retained history,
+command drafts, investigation state and the private query/archive/autosave/close
+controllers. Connection and polling methods live in
+[`session_capture.rs`](../../src/app/session_capture.rs). Rendering, clipboard
+delivery and native file dialogs borrow the runtime from `app/ui/`; application
+methods recheck admission and perform storage work through workers. Runtime
+modules do not depend on egui or native file dialogs. This is the first ownership
+extraction in [Decision 007](../../DECISIONS.md#decision-007-explicit-session-ownership-and-bounded-workspace),
+not an independent-session workspace: visible monitor tabs still share that one
+runtime. The next stage must add stable identities and aggregate close before
+exposing a second owner.
+
 Do not perform a full workspace migration as incidental cleanup. Each extraction
 must preserve behavior, have tests, and establish a real dependency boundary.
 

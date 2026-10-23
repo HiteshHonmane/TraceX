@@ -21,10 +21,10 @@ fn records() -> Vec<SharedLog> {
         raw: "raw 🦀".into(),
     })]
 }
-fn app() -> TraceXApp {
-    TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())))
+fn app() -> SessionRuntime {
+    SessionRuntime::new()
 }
-fn complete(app: &mut TraceXApp) {
+fn complete(app: &mut SessionRuntime) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while app.session_archive_busy() {
         app.poll_session_archive();
@@ -248,7 +248,7 @@ fn stopped_capture_pending_data_waits_during_export_then_drains() {
     std::fs::remove_dir(directory).unwrap();
 }
 
-fn capacity_stopped_app() -> TraceXApp {
+fn capacity_stopped_app() -> SessionRuntime {
     let mut app = app();
     let mut original = records();
     Arc::make_mut(&mut original[0]).tag = Some("original_tag".into());

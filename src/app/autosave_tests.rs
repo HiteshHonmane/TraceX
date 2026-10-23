@@ -4,15 +4,85 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-fn app() -> TraceXApp {
-    TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())))
+fn app() -> SessionRuntime {
+    SessionRuntime::new()
+}
+
+#[test]
+fn autosave_setting_adapters_preserve_values_when_pending_work_refuses_change() {
+    let mut app = app();
+    let original_path = app.auto_save_path.clone();
+    app.auto_save.active = true;
+    app.auto_save.pending = Some(AutosaveCommand::SetLimit(25));
+    assert!(!app.set_auto_save_limit_mb(50));
+    assert_eq!(app.auto_save_limit_mb, 25);
+    assert!(!app.set_auto_save_path(PathBuf::from("must-not-open.log")));
+    assert_eq!(app.auto_save_path, original_path);
+    assert!(app.auto_save_pending());
+    assert!(app.auto_save.worker.is_none());
+    assert!(app.operation_error.is_some());
+}
+
+#[test]
+fn disabled_autosave_settings_update_without_spawning_storage() {
+    let mut app = app();
+    let path = PathBuf::from("configured-only.log");
+    app.auto_save_sequence = 4;
+    assert!(app.set_auto_save_path(path.clone()));
+    assert!(app.set_auto_save_limit_mb(50));
+    assert_eq!(app.auto_save_path, Some(path));
+    assert_eq!(app.auto_save_sequence, 0);
+    assert_eq!(app.auto_save_limit_mb, 50);
+    assert!(app.auto_save.worker.is_none());
+    assert_eq!(app.unsaved_payload_count(), 0);
+    assert!(!app.recovery_exporting());
+}
+
+#[test]
+fn autosave_limit_rejects_invalid_values_without_mutation_or_worker_creation() {
+    let mut app = app();
+    for invalid in [0, 4097, u64::MAX] {
+        assert!(!app.set_auto_save_limit_mb(invalid));
+        assert_eq!(app.auto_save_limit_mb, 25);
+        assert!(app.auto_save.worker.is_none());
+        assert!(
+            app.operation_error
+                .as_deref()
+                .unwrap()
+                .contains("1 and 4096")
+        );
+    }
+    assert!(app.set_auto_save_limit_mb(1));
+    assert!(app.set_auto_save_limit_mb(4096));
+    assert_eq!(app.auto_save_limit_mb, 4096);
+    assert!(app.auto_save.worker.is_none());
+}
+
+#[test]
+fn autosave_path_restart_refusal_restores_original_path_and_sequence() {
+    let mut app = app();
+    let original_path = app.auto_save_path.clone();
+    app.auto_save_sequence = 7;
+    app.auto_save_enabled = true;
+    app.auto_save.recovery.push((
+        WriteRequest {
+            id: 0,
+            payload: "unsaved".into(),
+        },
+        0,
+    ));
+    assert!(!app.set_auto_save_path(PathBuf::from("must-not-replace.log")));
+    assert_eq!(app.auto_save_path, original_path);
+    assert_eq!(app.auto_save_sequence, 7);
+    assert_eq!(app.unsaved_payload_count(), 1);
+    assert!(app.auto_save.worker.is_none());
 }
 fn directory(name: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!("tracex-{name}-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     directory
 }
-fn until(app: &mut TraceXApp, mut ready: impl FnMut(&TraceXApp) -> bool) {
+fn until(app: &mut SessionRuntime, mut ready: impl FnMut(&SessionRuntime) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while !ready(app) {
         assert!(

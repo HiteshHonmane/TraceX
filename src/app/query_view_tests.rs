@@ -79,7 +79,7 @@ fn appending_records_keeps_valid_prefix_and_eventually_includes_new_rows() {
 
 #[test]
 fn clear_and_equal_length_replacement_cannot_reuse_old_indices() {
-    let mut app = TraceXApp::with_ports(Arc::new(std::sync::Mutex::new(Vec::new())));
+    let mut app = SessionRuntime::new();
     app.record_log_line("old needle".into());
     complete(&mut app.query_view, &app.logs, query("needle"));
     app.clear();

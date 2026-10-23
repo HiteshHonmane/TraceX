@@ -1,13 +1,11 @@
+#[cfg(test)]
 use crate::domain::history_budget::HistoryBudget;
 use crate::domain::log::*;
-use crate::domain::query::{LogQuery, QueryScope, SeveritySelection};
-use chrono::Local;
-use directories::UserDirs;
+#[cfg(test)]
+use crate::domain::query::QueryScope;
 use eframe::egui::{self, Color32, FontId, RichText, Stroke, Vec2};
 use serialport::available_ports;
 use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -52,48 +50,18 @@ fn register_submitted_command(history: &mut Vec<String>, command: &str) -> Optio
     Some(command.to_string())
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ANSI CODE STRIPPER
-// ═══════════════════════════════════════════════════════════════════════════════
-
-impl TraceXApp {
-    fn can_retain_line_parts(&self, length: usize, capacity: usize) -> bool {
-        !self.history_limit_reached && self.history.can_retain_line_parts(length, capacity)
-    }
-
-    fn rebuild_history_accounting(&mut self) {
-        self.history.rebuild(&self.logs);
-        self.history_limit_reached = false;
-        self.query_view.invalidate();
-    }
-
-    fn log_query(&self) -> LogQuery {
-        LogQuery::new(
-            &self.search,
-            SeveritySelection {
-                info: self.show_info,
-                warn: self.show_warn,
-                error: self.show_error,
-            },
-        )
-    }
-
-    fn query_indices(&self, scope: QueryScope) -> Vec<usize> {
-        self.log_query()
-            .indices(self.logs.iter().map(AsRef::as_ref), scope)
-    }
-}
-
 mod autosave;
 mod autosave_worker;
 mod capture;
 mod log_format;
 mod query_view;
 mod query_worker;
+mod session;
 mod session_archive;
+mod session_capture;
+use session::SessionRuntime;
 mod shutdown;
 mod storage;
-use autosave::AutosaveController;
 
 use log_format::*;
 #[cfg(test)]
@@ -267,90 +235,17 @@ struct UiTab {
 }
 
 struct TraceXApp {
-    // Ports (updated in background) - (display_name, port_name)
+    // A single shared port catalog belongs to the native application shell.
     ports: Arc<Mutex<Vec<(String, String)>>>,
-    selected_port: String,
-    baud_rate: u32,
-
-    // Connection
-    connected: bool,
-    serial_tx: Option<SyncSender<Vec<u8>>>,
-    capture: Option<capture::CaptureInbox>,
-    next_capture_batch: u64,
-    capture_error: Option<String>,
-    stop_flag: Option<Arc<Mutex<bool>>>,
-    last_connected_port: Option<String>,
-
-    // Logs
-    logs: Vec<SharedLog>,
-    query_view: query_view::QueryView,
-    next_id: usize,
-    history: HistoryBudget,
-    history_dirty: bool,
-    history_limit_reached: bool,
-    shutdown: shutdown::ShutdownCoordinator,
-    session_archive: session_archive::SessionArchive,
-
-    // Command
-    command_input: String,
-    command_history: Vec<String>,
-    send_newline: bool,
-    auto_clear_command: bool,
-
-    // Filter
-    search: String,
-    selected: HashSet<usize>,
-    filter_panel_open: bool,
-    filter_exclude: bool,
-    filter_results_height: f32,
-    scroll_to_log: Option<usize>,
-    scroll_jump_settle_frames: u8,
-
-    // Auto-save
-    auto_save_enabled: bool,
-    auto_save_path: Option<PathBuf>,
-    auto_save_current_path: Option<PathBuf>,
-    auto_save: AutosaveController,
-    auto_save_limit_mb: u64,
-    auto_save_bytes_written: u64,
-    auto_save_sequence: u32,
-    auto_save_error: Option<String>,
-    operation_error: Option<String>,
-
-    // UI
-    auto_scroll: bool,
-    live_scroll_frames: u8,
+    session: SessionRuntime,
     ui_tabs: Vec<UiTab>,
     active_tab: usize,
-    show_info: bool,
-    show_warn: bool,
-    show_error: bool,
-
-    // Stats
-    rate: f32,
-    rate_count: usize,
-    rate_timer: Instant,
-
-    // Auto-reconnect
-    reconnect_cooldown: Instant,
 }
 
 impl TraceXApp {
-    // Font definitions take effect at egui's next pass. The creation callback
-    // must prepare the UI before the first update can use named font families.
     fn prepare_native_ui(self, ctx: &egui::Context) -> Self {
         theme::setup(ctx);
         self
-    }
-
-    fn default_log_path() -> PathBuf {
-        if let Some(user_dirs) = UserDirs::new()
-            && let Some(doc_dir) = user_dirs.document_dir()
-        {
-            return doc_dir.join("TraceX.log");
-        }
-        // Fallback to current directory if Documents folder not found
-        PathBuf::from("TraceX.log")
     }
 
     fn new() -> Self {
@@ -374,65 +269,12 @@ impl TraceXApp {
     fn with_ports(ports: Arc<Mutex<Vec<(String, String)>>>) -> Self {
         Self {
             ports,
-            selected_port: String::new(),
-            baud_rate: 115200,
-
-            connected: false,
-            serial_tx: None,
-            capture: None,
-            next_capture_batch: 0,
-            capture_error: None,
-            stop_flag: None,
-            last_connected_port: None,
-
-            logs: Vec::new(),
-            query_view: query_view::QueryView::default(),
-            next_id: 0,
-            history: HistoryBudget::default(),
-            history_dirty: false,
-            history_limit_reached: false,
-            shutdown: shutdown::ShutdownCoordinator::default(),
-            session_archive: session_archive::SessionArchive::default(),
-
-            command_input: String::new(),
-            command_history: Vec::new(),
-            send_newline: true,
-            auto_clear_command: true,
-
-            search: String::new(),
-            selected: HashSet::new(),
-            filter_panel_open: false,
-            filter_exclude: false,
-            filter_results_height: 180.0,
-            scroll_to_log: None,
-            scroll_jump_settle_frames: 0,
-
-            auto_save_enabled: false,
-            auto_save_path: Some(Self::default_log_path()),
-            auto_save_current_path: None,
-            auto_save: AutosaveController::default(),
-            auto_save_limit_mb: 25,
-            auto_save_bytes_written: 0,
-            auto_save_sequence: 0,
-            auto_save_error: None,
-            operation_error: None,
-
-            auto_scroll: true,
-            live_scroll_frames: 0,
+            session: SessionRuntime::new(),
             ui_tabs: vec![UiTab {
-                title: "Monitor 1".to_string(),
+                title: "Monitor 1".to_owned(),
                 setup: false,
             }],
             active_tab: 0,
-            show_info: true,
-            show_warn: true,
-            show_error: true,
-
-            rate: 0.0,
-            rate_count: 0,
-            rate_timer: Instant::now(),
-
-            reconnect_cooldown: Instant::now(),
         }
     }
 
@@ -516,316 +358,7 @@ impl TraceXApp {
             })
             .collect()
     }
-
-    fn record_log_line(&mut self, line: String) {
-        let timestamp = Local::now().format("%H:%M:%S.%3f").to_string();
-        let entry = LogEntry::new(self.next_id, line, timestamp);
-        self.next_id += 1;
-        self.rate_count += 1;
-        self.append_auto_save_line(&format_log_line(
-            &entry.timestamp,
-            entry.level,
-            &entry.message,
-        ));
-
-        self.history.record_entry(&entry);
-        self.logs.push(Arc::new(entry));
-        self.history_dirty = true;
-    }
-
-    fn connect(&mut self) {
-        if self.capture.is_some()
-            || self.auto_save.stopping
-            || self.shutdown.active()
-            || self.session_archive_busy()
-            || self.history_limit_reached
-        {
-            self.operation_error =
-                Some("Wait for the previous connection to finish disconnecting.".to_owned());
-            return;
-        }
-        if self.selected_port.is_empty() {
-            self.operation_error = Some("Select a serial port before connecting.".to_owned());
-            return;
-        }
-
-        let port = match serialport::new(&self.selected_port, self.baud_rate)
-            .timeout(Duration::from_millis(50))
-            .open()
-        {
-            Ok(p) => p,
-            Err(error) => {
-                self.operation_error = Some(format!("Could not connect to serial port: {error}"));
-                return;
-            }
-        };
-
-        let stop = Arc::new(Mutex::new(false));
-        let (inbox, commands) = match capture::start_reader(
-            port,
-            capture::CaptureBudget::default(),
-            Arc::clone(&stop),
-            self.next_capture_batch,
-        ) {
-            Ok(reader) => reader,
-            Err(error) => {
-                self.operation_error = Some(format!("Could not start capture: {error}"));
-                return;
-            }
-        };
-        self.capture = Some(inbox);
-        self.serial_tx = Some(commands);
-        self.stop_flag = Some(stop);
-        self.capture_error = None;
-
-        self.connected = true;
-        self.operation_error = None;
-        self.last_connected_port = Some(self.selected_port.clone());
-
-        if self.auto_save_enabled && !self.auto_save.active {
-            self.open_new_auto_save_file();
-        }
-    }
-
-    fn disconnect(&mut self) {
-        if let Some(flag) = &self.stop_flag
-            && let Ok(mut f) = flag.lock()
-        {
-            *f = true;
-        }
-        self.connected = false;
-        // Retain incoming logs and autosave until the worker closes its channel.
-        self.serial_tx = None;
-        // Clear last_connected_port on manual disconnect to prevent auto-reconnect
-        self.last_connected_port = None;
-    }
-
-    fn poll(&mut self) {
-        self.poll_session_archive();
-        self.poll_auto_save();
-        if self.auto_save_enabled && self.auto_save_error.is_some() && self.capture.is_some() {
-            self.disconnect();
-        }
-        self.poll_capture_status();
-        // A record remains in its bounded batch until history and storage accept it.
-        for _ in 0..256 {
-            if !self.can_ingest_log() || self.history_limit_reached || self.session_archive_busy() {
-                break;
-            }
-            let shape = self.capture.as_mut().and_then(|capture| {
-                capture
-                    .peek_record()
-                    .map(|line| (line.len(), line.capacity()))
-            });
-            if let Some((length, capacity)) = shape {
-                if self.next_id == usize::MAX {
-                    self.capture_error = Some("Capture stopped because record identifiers were exhausted. Pending received data remains retained; save this session before closing.".to_owned());
-                    self.history_limit_reached = true;
-                    self.disconnect();
-                    break;
-                }
-                if !self.can_retain_line_parts(length, capacity) {
-                    self.history_limit_reached = true;
-                    self.capture_error = Some("Capture stopped because retained history reached its safety limit. Use Save Session to preserve all retained records, then clear to process pending received data. Save the newly drained records separately. Filtered text export may omit records. Additional device output may be missing.".to_owned());
-                    self.disconnect();
-                    break;
-                }
-                if let Some(record) = self
-                    .capture
-                    .as_mut()
-                    .and_then(capture::CaptureInbox::pop_record)
-                {
-                    self.record_log_line(record);
-                }
-            } else {
-                // Filling an empty inbox can discover sender loss or publish a
-                // terminal tail. Observe that status before dropping ownership.
-                self.poll_capture_status();
-                if self
-                    .capture
-                    .as_ref()
-                    .is_some_and(capture::CaptureInbox::is_drained)
-                {
-                    self.handle_disconnection();
-                }
-                break;
-            }
-        }
-        self.poll_capture_status();
-
-        if self.rate_timer.elapsed() >= Duration::from_secs(1) {
-            self.rate = self.rate_count as f32;
-            self.rate_count = 0;
-            self.rate_timer = Instant::now();
-        }
-    }
-
-    fn handle_disconnection(&mut self) {
-        // Clean up connection state but keep last_connected_port for auto-reconnect
-        self.connected = false;
-        self.capture = None;
-        self.serial_tx = None;
-        self.stop_flag = None;
-        self.stop_auto_save();
-        // Reset reconnect cooldown
-        self.reconnect_cooldown = Instant::now();
-    }
-
-    fn check_auto_reconnect(&mut self) {
-        // Auto-reconnect if we were connected and the same port is available again
-        // Add a small cooldown to avoid rapid reconnection attempts
-        if !self.connected
-            && self.capture.is_none()
-            && !self.shutdown.active()
-            && !self.history_limit_reached
-            && !self.session_archive_busy()
-            && self.auto_save_error.is_none()
-            && !self.auto_save.stopping
-            && self.reconnect_cooldown.elapsed() >= Duration::from_millis(500)
-            && let Some(ref last_port) = self.last_connected_port
-        {
-            // Check if the port is available
-            let ports = self.ports.lock().map(|p| p.clone()).unwrap_or_default();
-            let port_available = ports.iter().any(|(_, port_name)| port_name == last_port);
-
-            if port_available && self.selected_port == *last_port {
-                // Same port is available again, auto-reconnect
-                self.connect();
-            }
-        }
-    }
-
-    fn send_command(&mut self, command: &str) -> bool {
-        let command = command.trim();
-        if command.is_empty() {
-            return false;
-        }
-        let size = command
-            .len()
-            .saturating_add(if self.send_newline { 2 } else { 0 });
-        if size > capture::MAX_COMMAND_BYTES {
-            self.operation_error = Some(format!(
-                "Command exceeds the {}-byte limit; edit it before retrying.",
-                capture::MAX_COMMAND_BYTES
-            ));
-            self.command_input = command.to_owned();
-            return false;
-        }
-        let Some(command) = register_submitted_command(&mut self.command_history, command) else {
-            return false;
-        };
-        let mut data = command.as_bytes().to_vec();
-        if self.send_newline {
-            data.extend_from_slice(b"\r\n");
-        }
-        let error = match self.serial_tx.as_ref() {
-            Some(sender) if self.connected => match sender.try_send(data) {
-                Ok(()) => {
-                    self.operation_error = None;
-                    return true;
-                }
-                Err(TrySendError::Full(_)) => {
-                    "Command queue is full; the command is retained for retry."
-                }
-                Err(TrySendError::Disconnected(_)) => {
-                    "Could not send command because the connection ended."
-                }
-            },
-            _ => "Connect to a device before sending commands.",
-        };
-        self.command_input = command;
-        self.operation_error = Some(error.to_owned());
-        false
-    }
-
-    fn poll_capture_status(&mut self) {
-        let Some(inbox) = &mut self.capture else {
-            return;
-        };
-        inbox.poll_status();
-        if let Some(sequence) = inbox.current_batch_id() {
-            self.next_capture_batch = self.next_capture_batch.max(sequence.saturating_add(1));
-        }
-        if let Some(reason) = inbox.terminal_reason() {
-            self.next_capture_batch = self.next_capture_batch.max(inbox.next_batch_id());
-            if reason.requires_attention() && self.capture_error.is_none() {
-                let usage = inbox.usage();
-                self.capture_error = Some(format!(
-                    "{} Received {} bytes; {} records processed; {} accounted backlog bytes; {} host batches rejected from the inbox and retained separately.",
-                    reason.message(),
-                    inbox
-                        .received_bytes()
-                        .map_or_else(|| "unknown".to_owned(), |bytes| bytes.to_string()),
-                    inbox.processed_records(),
-                    usage.bytes,
-                    inbox.rejected_batches()
-                ));
-            }
-            if matches!(
-                reason,
-                capture::CaptureStopReason::Saturated
-                    | capture::CaptureStopReason::WorkerEndedUnexpectedly
-                    | capture::CaptureStopReason::SequenceExhausted
-                    | capture::CaptureStopReason::ConsumerGone
-            ) {
-                self.last_connected_port = None;
-            }
-            self.connected = false;
-            self.serial_tx = None;
-        }
-    }
-
-    fn filtered(&self) -> Vec<&LogEntry> {
-        self.query_indices(QueryScope::Main)
-            .into_iter()
-            .map(|index| self.logs[index].as_ref())
-            .collect()
-    }
-
-    fn export_text(&self) -> String {
-        format_log_entries(self.filtered())
-    }
-
-    fn copy_selected(&self, ctx: &egui::Context) {
-        let text = if self.selected.is_empty() {
-            self.export_text()
-        } else {
-            format_log_entries(
-                self.logs
-                    .iter()
-                    .filter(|e| self.selected.contains(&e.id))
-                    .map(AsRef::as_ref),
-            )
-        };
-        ctx.copy_text(text);
-    }
-
-    fn copy_all(&self, ctx: &egui::Context) {
-        ctx.copy_text(format_log_entries(self.logs.iter().map(AsRef::as_ref)));
-    }
-
-    fn clear(&mut self) {
-        if self.session_archive_busy() {
-            self.operation_error =
-                Some("Wait for the session operation before clearing logs.".to_owned());
-            return;
-        }
-        self.logs.clear();
-        self.query_view.invalidate();
-        self.history_dirty = false;
-        self.selected.clear();
-        self.history.reset();
-        self.history_limit_reached = false;
-    }
-
-    fn export_logs(&mut self) {
-        self.choose_export_logs();
-    }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// UI
-// ═══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests;

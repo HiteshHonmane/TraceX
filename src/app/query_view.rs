@@ -1,6 +1,6 @@
 //! Application-owned query generations and immutable view snapshots.
-use super::TraceXApp;
 use super::query_worker::{QueryPoll, QueryRequest, QueryResult, QueryWorker};
+use super::session::SessionRuntime;
 use crate::domain::{log::SharedLog, query::LogQuery};
 use std::sync::Arc;
 
@@ -137,7 +137,7 @@ impl QueryView {
     }
 }
 
-impl TraceXApp {
+impl SessionRuntime {
     pub(super) fn refresh_query_view(&mut self) {
         if self.session_archive_busy() {
             self.query_view.invalidate();
@@ -159,12 +159,13 @@ impl TraceXApp {
         self.query_view.failure.as_deref()
     }
 
-    pub(super) fn copy_query_rows(&self, ctx: &eframe::egui::Context, indices: &[usize]) {
-        ctx.copy_text(super::log_format::format_log_entries(
+    /// Format rows from this runtime without owning a clipboard or UI context.
+    pub(super) fn query_rows_text(&self, indices: &[usize]) -> String {
+        super::log_format::format_log_entries(
             indices
                 .iter()
                 .filter_map(|&index| self.logs.get(index).map(AsRef::as_ref)),
-        ));
+        )
     }
 }
 

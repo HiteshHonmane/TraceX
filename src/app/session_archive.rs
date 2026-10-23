@@ -1,5 +1,5 @@
 //! Disconnected save/open ownership. File I/O and segment parsing run off the UI.
-use super::TraceXApp;
+use super::session::SessionRuntime;
 use crate::domain::{
     history_budget::HistoryBudget,
     log::SharedLog,
@@ -109,7 +109,7 @@ fn open_with_budget(path: PathBuf, mut budget: HistoryBudget) -> Result<Vec<Shar
     Ok(records)
 }
 
-impl TraceXApp {
+impl SessionRuntime {
     pub(super) fn session_archive_busy(&self) -> bool {
         self.session_archive.receiver.is_some()
     }
@@ -128,7 +128,7 @@ impl TraceXApp {
     pub(super) fn can_open_session(&self) -> bool {
         self.can_save_session() && self.capture.is_none() && self.logs.is_empty()
     }
-    fn save_session_ready(&mut self) -> bool {
+    pub(super) fn save_session_ready(&mut self) -> bool {
         if !self.can_save_session() {
             self.operation_error = Some(
                 "Disconnect and wait for storage/session work before saving retained records."
@@ -138,7 +138,7 @@ impl TraceXApp {
         }
         true
     }
-    fn open_session_ready(&mut self) -> bool {
+    pub(super) fn open_session_ready(&mut self) -> bool {
         if self.can_open_session() {
             return true;
         }
@@ -155,7 +155,7 @@ impl TraceXApp {
         }
         self.start_owned_save(path, SaveKind::Session);
     }
-    fn text_export_ready(&mut self) -> bool {
+    pub(super) fn text_export_ready(&mut self) -> bool {
         if self.shutdown.active() || self.connected || self.session_archive_busy() {
             self.operation_error = Some("Disconnect and wait for the current file operation before exporting retained logs.".into());
             return false;
@@ -167,18 +167,6 @@ impl TraceXApp {
             return;
         }
         self.start_owned_save(path, SaveKind::Text(self.log_query()));
-    }
-    pub(super) fn choose_export_logs(&mut self) {
-        if !self.text_export_ready() {
-            return;
-        }
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Log", &["log", "txt"])
-            .set_file_name("export.log")
-            .save_file()
-        {
-            self.export_logs_to(path);
-        }
     }
     fn start_owned_save(&mut self, path: PathBuf, kind: SaveKind) {
         let marks_clean = matches!(&kind, SaveKind::Session);
@@ -295,29 +283,6 @@ impl TraceXApp {
             Err(message) => self.archive_failed(message),
         }
     }
-    pub(super) fn choose_save_session(&mut self) {
-        if !self.save_session_ready() {
-            return;
-        }
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("TraceX session", &["tracex"])
-            .set_file_name("TraceX-session.tracex")
-            .save_file()
-        {
-            self.save_session_to(path);
-        }
-    }
-    pub(super) fn choose_open_session(&mut self) {
-        if !self.open_session_ready() {
-            return;
-        }
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("TraceX session", &["tracex"])
-            .pick_file()
-        {
-            self.open_session_from(path);
-        }
-    }
 }
 
 fn take_records(records: Arc<Mutex<Option<Vec<SharedLog>>>>) -> Vec<SharedLog> {
@@ -330,3 +295,7 @@ fn take_records(records: Arc<Mutex<Option<Vec<SharedLog>>>>) -> Vec<SharedLog> {
 #[cfg(test)]
 #[path = "session_archive_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "session_runtime_tests.rs"]
+mod runtime_owner_tests;

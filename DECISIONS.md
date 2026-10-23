@@ -234,6 +234,66 @@ memory guarantee. Queries still scan linearly off the UI thread. File format and
 log semantics stay unchanged; no dependency or new crate is required. See
 [background query contract](doc/engineering/BACKGROUND-QUERY.md).
 
+## Decision 007: Explicit session ownership and bounded workspace
+
+- **Date:** 2026-10-23
+- **Status:** Accepted; implementation staged
+- **Owners:** TraceX engineering under delegated product authority
+
+### Context
+
+The current tabs share one capture, history and command target. Independent
+monitors require worker results and close decisions to retain their original
+owner even when another tab is selected. Dropping a tab must not drop pending
+capture, archive work or unsaved records.
+
+### Decision
+
+Extract the existing live state into a real `SessionRuntime` first, preserving
+single-owner behavior in a compiling intermediate. Then introduce a workspace
+with stable, checked, never-reused session IDs and at most two retained sessions
+initially. The cap includes closing sessions and is injectable in tests. Reject
+excess creation explicitly without eviction. Do not swap active state, introduce
+a forwarding `Deref`, or create nested application instances.
+
+Each session owns its transport, inbox, history budget, archive/autosave/query
+controllers, draft and investigation state. Worker channels return to that owner.
+Commands carry both session identity and connection generation; stale targets
+reject without sending or clearing the originating draft. Endpoint claims remain
+occupied through capture drain. Opening a record archive does not reconnect a
+device or imply persistent workspace configuration.
+
+Poll every retained owner, including inactive and closing sessions, within one
+aggregate 256-record frame budget with fair rotation. Only the active owner
+prepares fresh query snapshots; inactive completions still drain. Namespace
+interactive widget state by stable session identity.
+
+Retain a closing session until capture and storage finish and its own dirty-state
+decision is resolved. Individual tab close has no force-drop path in this slice.
+Window close addresses every owner and retains the existing explicit global
+force-exit exception. Cancelling window close resets all participating close
+requests while leaving captures stopped and evidence intact. Reserve a fresh
+identity before replacing the final closed session. Enable independent-session
+UI only when aggregate close and failure-path tests are integrated.
+
+### Alternatives Considered
+
+- Switching fields on the current app: delayed completion and command routing
+  can affect the wrong device or history.
+- Unlimited tabs with per-session bounds: multiplies memory and worker resources
+  without an application-level admission bound.
+- A broad multi-crate migration or new message bus: unnecessary to establish
+  ownership with the existing private controller channels.
+
+### Consequences
+
+The initial two-owner limit bounds accounted retained history to 128 MiB under
+the existing defaults; this is not a process RSS guarantee. Per-session queue
+bounds still apply. ID exhaustion, capacity rejection, stale targets and pending
+close work must be explicit and non-destructive. No new crate or dependency is
+required. Continuous durable recovery, asynchronous serial connection, complete
+Unicode shaping and persistent workspace restoration remain separate work.
+
 ## Decision Template
 
 Copy this section for future decisions.

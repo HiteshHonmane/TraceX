@@ -1,5 +1,7 @@
 use super::*;
+use chrono::Local;
 use std::fs;
+use std::path::PathBuf;
 
 fn test_entry(id: usize) -> LogEntry {
     LogEntry {
@@ -110,6 +112,32 @@ fn filtered_copy_formats_only_the_supplied_rows() {
         copied,
         "[10:00:01.001] [WRN] first match\n[10:00:02.002] [ERR] second match"
     );
+}
+
+#[test]
+fn runtime_clipboard_text_adapters_preserve_filtered_and_explicit_selection_scopes() {
+    let mut session = SessionRuntime::new();
+    session.record_log_line("INFO needle first".into());
+    session.record_log_line("WARN hidden second".into());
+    session.record_log_line("ERROR needle third".into());
+    session.search = "needle".into();
+    session.show_warn = false;
+    let filtered = session.copy_selected_text();
+    assert!(filtered.contains("needle first"));
+    assert!(filtered.contains("needle third"));
+    assert!(!filtered.contains("hidden second"));
+    session.selected.insert(1);
+    session.selected.insert(0);
+    let selected = session.copy_selected_text();
+    assert!(selected.contains("hidden second"));
+    assert!(selected.find("first").unwrap() < selected.find("second").unwrap());
+    assert!(!selected.contains("third"));
+    let all = session.copy_all_text();
+    assert!(all.contains("hidden second"));
+    assert!(all.contains("needle third"));
+    let query_rows = session.query_rows_text(&[2, usize::MAX]);
+    assert!(query_rows.contains("needle third"));
+    assert!(!query_rows.contains("first"));
 }
 
 #[test]
@@ -266,8 +294,8 @@ fn timestamped_autosave_file_is_created_immediately_and_never_overwritten() {
     let _ = fs::remove_dir(test_dir);
 }
 
-fn app_without_devices() -> TraceXApp {
-    TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())))
+fn app_without_devices() -> SessionRuntime {
+    SessionRuntime::new()
 }
 
 #[test]
@@ -301,7 +329,7 @@ fn manual_disconnect_retains_capture_until_final_records_drain_and_blocks_connec
     assert!(app.stop_flag.is_none());
 }
 
-fn poll_until(app: &mut TraceXApp, mut ready: impl FnMut(&TraceXApp) -> bool) {
+fn poll_until(app: &mut SessionRuntime, mut ready: impl FnMut(&SessionRuntime) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while !ready(app) {
         assert!(

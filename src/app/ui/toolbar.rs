@@ -1,133 +1,124 @@
 use super::super::*;
 use super::icons::{self, Icon};
 
-impl TraceXApp {
-    pub(super) fn render_toolbar(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &egui::Context,
-    ) -> [egui::Rect; 8] {
-        let mut controls = [egui::Rect::NOTHING; 8];
-        let previous_spacing = ui.spacing().item_spacing.y;
-        ui.spacing_mut().item_spacing.y = 0.0;
-        egui::Frame::none()
-            .fill(theme::BG_PANEL)
-            .inner_margin(egui::Margin::symmetric(16.0, 0.0))
-            .show(ui, |ui| {
-                ui.allocate_ui_with_layout(
-                    Vec2::new(ui.available_width(), 52.0),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        let search_width = (ui.available_width() - 370.0).clamp(140.0, 256.0);
-                        let (search_slot, _) = ui.allocate_exact_size(
-                            Vec2::new(search_width, 34.0),
-                            egui::Sense::hover(),
+pub(super) fn render_toolbar(
+    session: &mut SessionRuntime,
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+) -> [egui::Rect; 8] {
+    let mut controls = [egui::Rect::NOTHING; 8];
+    let previous_spacing = ui.spacing().item_spacing.y;
+    ui.spacing_mut().item_spacing.y = 0.0;
+    egui::Frame::none()
+        .fill(theme::BG_PANEL)
+        .inner_margin(egui::Margin::symmetric(16.0, 0.0))
+        .show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                Vec2::new(ui.available_width(), 52.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    let search_width = (ui.available_width() - 370.0).clamp(140.0, 256.0);
+                    let (search_slot, _) =
+                        ui.allocate_exact_size(Vec2::new(search_width, 34.0), egui::Sense::hover());
+                    controls[0] = render_search(ui, &mut session.search, search_slot);
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    if ui.available_width() < 410.0 {
+                        controls[1] = ui
+                            .menu_button("Levels", |ui| {
+                                ui.checkbox(&mut session.show_info, "INFO");
+                                ui.checkbox(&mut session.show_warn, "WARN");
+                                ui.checkbox(&mut session.show_error, "ERROR");
+                            })
+                            .response
+                            .rect;
+                    } else {
+                        controls[1] =
+                            severity_chip(ui, "INFO", &mut session.show_info, theme::INFO, false);
+                        controls[2] =
+                            severity_chip(ui, "WARN", &mut session.show_warn, theme::WARNING, true);
+                        controls[3] = severity_chip(
+                            ui,
+                            "ERROR",
+                            &mut session.show_error,
+                            theme::ERROR,
+                            false,
                         );
-                        controls[0] = render_search(ui, &mut self.search, search_slot);
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.add_space(6.0);
-                        if ui.available_width() < 410.0 {
-                            controls[1] = ui
-                                .menu_button("Levels", |ui| {
-                                    ui.checkbox(&mut self.show_info, "INFO");
-                                    ui.checkbox(&mut self.show_warn, "WARN");
-                                    ui.checkbox(&mut self.show_error, "ERROR");
-                                })
-                                .response
-                                .rect;
-                        } else {
-                            controls[1] =
-                                severity_chip(ui, "INFO", &mut self.show_info, theme::INFO, false);
-                            controls[2] = severity_chip(
-                                ui,
-                                "WARN",
-                                &mut self.show_warn,
-                                theme::WARNING,
-                                true,
-                            );
-                            controls[3] = severity_chip(
-                                ui,
-                                "ERROR",
-                                &mut self.show_error,
-                                theme::ERROR,
-                                false,
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let action = icons::button(
+                            ui,
+                            Icon::Copy,
+                            "Copy all retained logs",
+                            Vec2::splat(28.0),
+                            false,
+                        );
+                        controls[4] = action.rect;
+                        if action.clicked() {
+                            ctx.copy_text(session.copy_all_text());
+                        }
+                        let action = icons::button(
+                            ui,
+                            Icon::Trash,
+                            "Clear retained logs",
+                            Vec2::splat(28.0),
+                            false,
+                        );
+                        controls[5] = action.rect;
+                        if action.clicked() {
+                            session.clear();
+                        }
+                        let action = icons::button(
+                            ui,
+                            Icon::Follow,
+                            "Follow incoming logs",
+                            Vec2::splat(28.0),
+                            session.auto_scroll,
+                        );
+                        controls[6] = action.rect;
+                        if action.clicked() {
+                            session.auto_scroll = !session.auto_scroll;
+                            session.live_scroll_frames =
+                                live_scroll_frames_after_toggle(true, session.auto_scroll);
+                        }
+                        let action = icons::button(
+                            ui,
+                            Icon::Export,
+                            "Export filtered text",
+                            Vec2::splat(28.0),
+                            false,
+                        );
+                        controls[7] = action.rect;
+                        if action.clicked() {
+                            super::session_actions::choose_export_logs(session);
+                        }
+                        if ui.available_width() > 150.0 && !session.logs.is_empty() {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{:.0}/s · {} lines",
+                                    session.rate,
+                                    session.logs.len(),
+                                ))
+                                .size(10.0)
+                                .color(theme::TEXT_MUTED),
+                            )
+                            .on_hover_text(
+                                "Retained record count; search updates in the background",
                             );
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let action = icons::button(
-                                ui,
-                                Icon::Copy,
-                                "Copy all retained logs",
-                                Vec2::splat(28.0),
-                                false,
-                            );
-                            controls[4] = action.rect;
-                            if action.clicked() {
-                                self.copy_all(ctx);
-                            }
-                            let action = icons::button(
-                                ui,
-                                Icon::Trash,
-                                "Clear retained logs",
-                                Vec2::splat(28.0),
-                                false,
-                            );
-                            controls[5] = action.rect;
-                            if action.clicked() {
-                                self.clear();
-                            }
-                            let action = icons::button(
-                                ui,
-                                Icon::Follow,
-                                "Follow incoming logs",
-                                Vec2::splat(28.0),
-                                self.auto_scroll,
-                            );
-                            controls[6] = action.rect;
-                            if action.clicked() {
-                                self.auto_scroll = !self.auto_scroll;
-                                self.live_scroll_frames =
-                                    live_scroll_frames_after_toggle(true, self.auto_scroll);
-                            }
-                            let action = icons::button(
-                                ui,
-                                Icon::Export,
-                                "Export filtered text",
-                                Vec2::splat(28.0),
-                                false,
-                            );
-                            controls[7] = action.rect;
-                            if action.clicked() {
-                                self.export_logs();
-                            }
-                            if ui.available_width() > 150.0 && !self.logs.is_empty() {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{:.0}/s · {} lines",
-                                        self.rate,
-                                        self.logs.len(),
-                                    ))
-                                    .size(10.0)
-                                    .color(theme::TEXT_MUTED),
-                                )
-                                .on_hover_text(
-                                    "Retained record count; search updates in the background",
-                                );
-                            }
-                        });
-                    },
-                );
-                render_query_status(ui, self.query_pending(), self.query_failure());
-            });
-        ui.painter().hline(
-            ui.max_rect().x_range(),
-            ui.cursor().top(),
-            Stroke::new(1.0_f32, theme::BORDER),
-        );
-        ui.spacing_mut().item_spacing.y = previous_spacing;
-        controls
-    }
+                    });
+                },
+            );
+            render_query_status(ui, session.query_pending(), session.query_failure());
+        });
+    ui.painter().hline(
+        ui.max_rect().x_range(),
+        ui.cursor().top(),
+        Stroke::new(1.0_f32, theme::BORDER),
+    );
+    ui.spacing_mut().item_spacing.y = previous_spacing;
+    controls
 }
 
 fn render_search(ui: &mut egui::Ui, search: &mut String, slot: egui::Rect) -> egui::Rect {
@@ -310,7 +301,7 @@ mod tests {
 
     #[test]
     fn toolbar_stays_at_approved_52_point_height_without_status() {
-        let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        let mut app = SessionRuntime::new();
         let ctx = egui::Context::default();
         theme::setup(&ctx);
         let _ = ctx.run(
@@ -324,7 +315,7 @@ mod tests {
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let top = ui.cursor().top();
-                    app.render_toolbar(ui, ctx);
+                    render_toolbar(&mut app, ui, ctx);
                     assert!(
                         (ui.cursor().top() - top - 52.0).abs() < 0.1,
                         "toolbar includes unexpected vertical spacing"
@@ -383,7 +374,7 @@ mod tests {
     #[test]
     fn search_levels_and_actions_fit_minimum_and_regular_clients() {
         for width in [800.0, 1200.0, 1280.0] {
-            let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+            let mut app = SessionRuntime::new();
             let ctx = egui::Context::default();
             theme::setup(&ctx);
             let _ = ctx.run(
@@ -400,7 +391,7 @@ mod tests {
                         .show(ctx, |_| {});
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let available = ui.available_rect_before_wrap();
-                        let controls = app.render_toolbar(ui, ctx);
+                        let controls = render_toolbar(&mut app, ui, ctx);
                         if controls[2].is_positive() {
                             for chip in &controls[1..4] {
                                 assert!(
