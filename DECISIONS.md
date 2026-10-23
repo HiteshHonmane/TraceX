@@ -165,6 +165,40 @@ Migration must not rename or delete files already created by users.
 - The new TraceX repository becomes the publishing destination while the
   HI-Logger repository remains historical.
 
+## Decision 005: Versioned append-only session segments
+
+- **Date:** 2026-10-23
+- **Status:** Accepted
+- **Owners:** TraceX engineering; approved by the coordinating lead under delegated architecture authority
+
+### Context
+
+Decision 002 requires an accepted format before persistent session implementation.
+Text exports cannot preserve all record fields or identify a corrupt/truncated tail.
+
+### Decision
+
+Use the v1 binary framing specified in [SESSION-FORMAT](doc/engineering/SESSION-FORMAT.md):
+versioned header, bounded JSON record payloads, length and CRC32-IEEE checksums.
+Preserve raw/derived fields, IDs and timestamps. Read sequentially, stop at the
+first invalid frame and expose the valid-prefix offset without modifying originals.
+Use existing serde/serde_json and standard-library I/O; no new dependency is needed.
+Fresh-file creation and asynchronous application ownership are required. Append
+acceptance is not a durability guarantee; a file-owning adapter must explicitly sync.
+
+### Alternatives Considered
+
+- Plain text/JSON export: lacks bounded checksummed framing and complete recovery semantics.
+- SQLite payload storage: conflicts with Decision 002.
+- New binary serialization/checksum dependencies: unnecessary for the bounded initial codec.
+
+### Consequences
+
+The first implementation is a segment codec and disconnected save/open workflow,
+not SQLite metadata, crash-proof live capture or a complete persistent workspace.
+Unknown versions and corruption are rejected; recovery never silently rewrites files.
+CRC detects accidental corruption and is not an authentication mechanism.
+
 ## Decision Template
 
 Copy this section for future decisions.

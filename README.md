@@ -19,7 +19,13 @@ and is not a production-qualified capture or recovery tool.
 - Command sending and recent command history
 - Virtualized two-axis log scrolling
 - Filtered log export
+- Save and reopen validated `.tracex` session files while disconnected
+- Bounded capture and history with explicit overload stops
+- Orderly close that drains capture and waits for storage
 - Native dark desktop interface
+
+These describe the current source tree. The published preview ZIP may precede
+the newest source changes; use the build instructions below to run them locally.
 
 New auto-save files use names such as
 `TraceX_2026-07-16_14-05-09.log`. Existing HI-Logger files are not renamed or
@@ -33,6 +39,20 @@ deleted.
 4. View, search, filter, and select live logs.
 5. Send commands from the command bar.
 6. Enable auto-save when the session must be retained on disk.
+7. Disconnect and use **File → Save Session** to preserve all retained fields in
+   a reopenable `.tracex` file. Text autosave/export is a separate formatted output.
+8. Save or export current logs before deliberately clearing them, then use
+   **File → Open Session** to reopen a validated session.
+
+File, Edit and View menus expose session actions, copying, search results and
+follow-scroll controls. Capture stops visibly when processing falls behind or
+history reaches its safety budget; pending received data is preserved. Export
+retained history and deliberately clear it to make space for pending records.
+
+The application is still a development preview. Monitor tabs share one device
+capture; independent device sessions, indexed background search and automatic
+crash recovery remain unfinished. Memory accounting limits are safety defaults,
+not measured throughput or whole-process memory guarantees.
 
 ## Current Platform Status
 
@@ -60,9 +80,13 @@ The Windows executable will be in `target/release/tracex.exe`.
 - [Contributor guide](CONTRIBUTING.md)
 - [Engineering decisions](DECISIONS.md)
 - [UART framing and disconnect behavior](doc/UART-FRAMING.md)
+- [Bounded capture and overload behavior](doc/CAPTURE-BEHAVIOR.md)
 - [Query behavior](doc/QUERY-BEHAVIOR.md)
 - [Development preview packaging](doc/DEVELOPMENT-PREVIEW.md)
 - [Asynchronous autosave behavior](doc/engineering/AUTOSAVE-WORKER.md)
+- [History retention limits](doc/engineering/HISTORY-RETENTION.md)
+- [Session file format and save/reopen](doc/engineering/SESSION-FORMAT.md)
+- [Close lifecycle](doc/engineering/CLOSE-LIFECYCLE.md)
 
 AI contributors must begin with [AGENTS.md](AGENTS.md).
 
@@ -70,7 +94,12 @@ AI contributors must begin with [AGENTS.md](AGENTS.md).
 
 - `src/main.rs` - native executable entry point
 - `src/domain/log.rs` - framework-independent log types and parsing
+- `src/domain/session_format.rs` - bounded, versioned session segment codec
+- `src/domain/history_budget.rs` - retained-history admission accounting
 - `src/app/mod.rs` - current application state and orchestration
+- `src/app/capture.rs` - bounded transport batches and retained terminal payload
+- `src/app/session_archive.rs` - worker-owned session save/open and text export
+- `src/app/shutdown.rs` - orderly close and explicit incomplete-close decisions
 - `src/app/log_format.rs` - copy and export text formatting
 - `src/app/ui.rs` - central log workspace and frame updates
 - `src/app/ui/sidebar.rs` - connection, port, logging, and settings controls

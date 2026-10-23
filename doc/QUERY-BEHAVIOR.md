@@ -10,6 +10,8 @@ The secondary filter-results pane uses the same severity and text contract. INCL
 
 Explicit selected-row copy continues to copy selected entries in capture order, including selected entries hidden by the current query. Copy all logs continues to mean all captured entries. These intentional operations are independent of the current query.
 
-Query logic lives in [the domain query module](../src/domain/query.rs); application methods supply severity state and format export/copy text. [The UI](../src/app/ui.rs) renders index snapshots into the existing log storage instead of cloning every matching timestamp and message each frame. Matching still scans retained entries and lowercases examined strings; this change does not establish indexed search, bounded retention, or a performance budget. Export remains synchronous pending the separate worker milestone.
+Query logic lives in [the domain query module](../src/domain/query.rs); application methods supply severity state and format copy text. [The UI](../src/app/ui.rs) renders index snapshots into the existing log storage instead of cloning every matching timestamp and message each frame. Matching still scans retained entries and lowercases examined strings; indexed background search remains unfinished. [History admission](engineering/HISTORY-RETENTION.md) limits retained records without silently evicting them.
+
+Text export runs on a worker while disconnected, streams the same main-view query to a new file and synchronizes it before reporting success. It retains and returns ownership of the original history on success or failure. Existing files are not overwritten. Pending capture consumption waits until the export finishes.
 
 Regression coverage combines raw-only and parsed-message matches, case/whitespace handling, severity exclusion, empty secondary queries, secondary exclusion, and application export parity. No visual layout changes are required by this behavior contract.

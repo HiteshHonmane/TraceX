@@ -26,5 +26,12 @@ All contributors should read:
 9. `09-Documentation.md`
 10. `10-Security.md`
 
+## Implemented behavior contracts
+
+- [Asynchronous text autosave](AUTOSAVE-WORKER.md)
+- [Bounded history retention](HISTORY-RETENTION.md)
+- [Session segment format and archive operations](SESSION-FORMAT.md)
+- [Close lifecycle](CLOSE-LIFECYCLE.md)
+
 If a chapter conflicts with `doc/02-System-Architecture.md`, the architecture
 document wins and the handbook must be corrected in the same change.

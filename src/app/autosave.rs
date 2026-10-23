@@ -21,19 +21,52 @@ pub(super) struct AutosaveController {
     pub(super) stopping: bool,
     last_saved_write: Option<(usize, usize)>,
     recovery_exporting: bool,
+    finish_requested: bool,
+    finish_observed: bool,
 }
 
 impl Drop for AutosaveController {
     fn drop(&mut self) {
         if let Some(worker) = &mut self.worker {
             // Never join or wait on the UI thread. Orderly application-exit
-            // coordination is still required; this is only a best-effort request.
+            // coordination uses request_auto_save_finish; Drop is best effort.
             let _ = worker.try_submit(AutosaveCommand::Finish);
         }
     }
 }
 
 impl TraceXApp {
+    /// Queue Finish only after earlier pending work, without waiting for storage.
+    pub(super) fn request_auto_save_finish(&mut self) {
+        if self.auto_save.finish_requested || self.auto_save.pending.is_some() {
+            return;
+        }
+        if self.auto_save.worker.is_none() {
+            self.auto_save.finish_observed = true;
+            return;
+        }
+        if self.submit_auto_save(AutosaveCommand::Finish) {
+            self.auto_save.finish_requested = true;
+            self.auto_save.active = false;
+            self.auto_save.stopping = true;
+        }
+    }
+
+    pub(super) fn auto_save_shutdown_complete(&self) -> bool {
+        self.auto_save.worker.is_none()
+            && self.auto_save.pending.is_none()
+            && self.auto_save.recovery.is_empty()
+            && !self.auto_save.failed
+    }
+
+    pub(super) fn auto_save_shutdown_failure(&self) -> Option<String> {
+        (self.auto_save.failed || !self.auto_save.recovery.is_empty()).then(|| {
+            self.auto_save_error.clone().unwrap_or_else(|| {
+                "Autosave did not complete; unsaved payloads remain in memory.".to_owned()
+            })
+        })
+    }
+
     fn submit_auto_save(&mut self, command: AutosaveCommand) -> bool {
         if self.auto_save.pending.is_some() {
             self.operation_error = Some(
@@ -43,7 +76,11 @@ impl TraceXApp {
         }
         if self.auto_save.worker.is_none() {
             match AutosaveWorker::spawn(COMMAND_CAPACITY, EVENT_CAPACITY) {
-                Ok(worker) => self.auto_save.worker = Some(worker),
+                Ok(worker) => {
+                    self.auto_save.worker = Some(worker);
+                    self.auto_save.finish_requested = false;
+                    self.auto_save.finish_observed = false;
+                }
                 Err(error) => {
                     self.auto_save.failed = true;
                     self.auto_save_error =
@@ -73,7 +110,10 @@ impl TraceXApp {
     }
 
     pub(super) fn open_new_auto_save_file(&mut self) -> bool {
-        if self.auto_save.stopping || !self.auto_save.recovery.is_empty() {
+        if self.auto_save.finish_requested
+            || self.auto_save.stopping
+            || !self.auto_save.recovery.is_empty()
+        {
             self.operation_error = Some(
                 "Autosave has pending finalization or unsaved data. Export logs before restarting."
                     .to_owned(),
@@ -208,8 +248,9 @@ impl TraceXApp {
                     }
                 }
                 Some(Ok(AutosaveEvent::Finished { failure })) => {
+                    self.auto_save.finish_observed = true;
                     self.auto_save.active = false;
-                    self.auto_save.stopping = false;
+                    self.auto_save.stopping = self.auto_save.finish_requested;
                     if let Some(failure) = failure {
                         self.auto_save.failed = true;
                         self.auto_save_error =
@@ -230,10 +271,12 @@ impl TraceXApp {
                 .as_ref()
                 .is_some_and(AutosaveWorker::is_finished)
         {
-            self.auto_save.failed = true;
+            if !self.auto_save.finish_observed {
+                self.auto_save.failed = true;
+            }
             self.auto_save.active = false;
-            self.auto_save.stopping = false;
-            if self.auto_save_error.is_none() {
+            self.auto_save.stopping = self.auto_save.finish_requested;
+            if !self.auto_save.finish_observed && self.auto_save_error.is_none() {
                 self.auto_save_error = Some(
                     "Autosave worker stopped unexpectedly. Export logs before closing.".to_owned(),
                 );
@@ -262,6 +305,19 @@ impl TraceXApp {
                     "Autosave worker is unavailable; pending data remains in memory.".to_owned(),
                 );
             }
+        }
+        // Finished is acknowledged only after observing both the terminal event
+        // and thread completion. Dropping a completed JoinHandle never waits.
+        if self.auto_save.finish_observed
+            && self
+                .auto_save
+                .worker
+                .as_ref()
+                .is_some_and(AutosaveWorker::is_finished)
+        {
+            self.auto_save.worker = None;
+            self.auto_save.finish_requested = false;
+            self.auto_save.stopping = false;
         }
     }
 
@@ -412,3 +468,100 @@ impl TraceXApp {
 #[cfg(test)]
 #[path = "autosave_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn finish_waits_for_pending_payload_and_acknowledged_worker_exit() {
+        let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        let root = std::env::temp_dir().join(format!("tracex-finish-order-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        app.auto_save.worker =
+            Some(AutosaveWorker::spawn_gated(1, 2, entered_tx, release_rx).unwrap());
+        app.auto_save_path = Some(root.join("capture.log"));
+        app.auto_save_enabled = true;
+        app.apply_auto_save_enabled_change();
+        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        app.next_id = 1;
+        app.append_auto_save_line("first");
+        app.next_id = 2;
+        app.append_auto_save_line("second");
+        assert!(app.auto_save.pending.is_some());
+        app.request_auto_save_finish();
+        assert!(
+            !app.auto_save.finish_requested,
+            "Finish cannot overtake pending data"
+        );
+        assert!(!app.auto_save_shutdown_complete());
+        release_tx.send(()).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.auto_save_shutdown_complete() {
+            assert!(
+                Instant::now() < deadline,
+                "worker completion timed out: {:?}",
+                app.auto_save_error
+            );
+            app.poll_auto_save();
+            app.request_auto_save_finish();
+            std::thread::yield_now();
+        }
+        assert!(app.auto_save.finish_observed);
+        assert!(app.auto_save.worker.is_none());
+        assert!(app.auto_save_shutdown_failure().is_none());
+        let path = app.auto_save_current_path.take().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\nsecond\n");
+        app.request_shutdown(Instant::now());
+        app.shutdown.keep_open();
+        assert!(
+            app.open_new_auto_save_file(),
+            "Keep open permits a new worker after finalization"
+        );
+        app.next_id = 3;
+        app.append_auto_save_line("after keep open");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.auto_save_shutdown_complete() {
+            assert!(Instant::now() < deadline);
+            app.poll_auto_save();
+            app.request_auto_save_finish();
+            std::thread::yield_now();
+        }
+        let restarted_path = app.auto_save_current_path.take().unwrap();
+        assert_ne!(restarted_path, path);
+        assert_eq!(
+            std::fs::read_to_string(&restarted_path).unwrap(),
+            "after keep open\n"
+        );
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(restarted_path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn failed_create_is_not_reported_complete_after_finish() {
+        let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        let root =
+            std::env::temp_dir().join(format!("tracex-finish-failure-{}", std::process::id()));
+        std::fs::write(&root, b"a file cannot be a log directory").unwrap();
+        app.auto_save_path = Some(root.join("capture.log"));
+        app.auto_save_enabled = true;
+        app.apply_auto_save_enabled_change();
+        app.request_auto_save_finish();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while app.auto_save.worker.is_some() {
+            assert!(Instant::now() < deadline);
+            app.poll_auto_save();
+            std::thread::yield_now();
+        }
+        assert!(app.auto_save.finish_observed);
+        assert!(!app.auto_save_shutdown_complete());
+        assert!(app.auto_save_shutdown_failure().is_some());
+        std::fs::remove_file(root).unwrap();
+    }
+}

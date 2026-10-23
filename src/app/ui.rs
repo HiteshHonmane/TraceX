@@ -1,10 +1,65 @@
 use super::*;
 
 mod command_bar;
+mod menus;
 mod sidebar;
 mod tabs;
 
 impl TraceXApp {
+    fn intercept_window_close(&mut self, ctx: &egui::Context, now: Instant) {
+        if ctx.input(|input| input.viewport().close_requested()) && !self.shutdown.allows_close() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.request_shutdown(now);
+        }
+    }
+
+    fn render_shutdown_dialog(&mut self, ctx: &egui::Context) {
+        if !self.shutdown.active() || self.shutdown.allows_close() {
+            return;
+        }
+        let reason = self.shutdown.decision().map(str::to_owned);
+        let unsaved_session = self.shutdown.unsaved_session_confirmation();
+        egui::Modal::new(egui::Id::new("orderly_shutdown")).show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            if unsaved_session {
+                ui.heading("Session history has not been saved");
+                ui.label("Retained session history has not been saved as a TraceX session. Text autosave/export may exist. Keep open to save, or close without saving the session.");
+                ui.horizontal(|ui| {
+                    if ui.button("Keep open").clicked() {
+                        self.shutdown.keep_open();
+                    }
+                    if ui.button("Close without saving session").clicked() {
+                        self.shutdown.close_without_saving_session();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+            } else if let Some(reason) = reason {
+                ui.heading("Shutdown incomplete");
+                ui.label(reason);
+                ui.label("Keep open to review or export pending logs. Capture remains stopped.");
+                ui.horizontal(|ui| {
+                    if ui.button("Keep open").clicked() {
+                        self.shutdown.keep_open();
+                    }
+                    if ui
+                        .button("Force close — pending logs may be lost")
+                        .clicked()
+                    {
+                        self.shutdown.force_close();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+            } else {
+                ui.heading("Finishing capture and saved logs");
+                ui.label("Waiting for received logs, autosave and session files to finish.");
+                ui.spinner();
+                if ui.button("Keep open").clicked() {
+                    self.shutdown.keep_open();
+                }
+            }
+        });
+    }
+
     // Monitor tabs currently present the same capture; opening a view must not
     // reset logs, selection, or the active transport.
     fn open_monitor_view(&mut self) {
@@ -47,16 +102,7 @@ impl TraceXApp {
                         );
                     }
                     ui.add_space(12.0);
-                    for item in ["File", "Edit", "View", "Help"] {
-                        ui.add_sized(
-                            [44.0, WINDOW_BAR_HEIGHT],
-                            egui::Button::new(
-                                RichText::new(item).size(12.0).color(theme::TEXT_DIM),
-                            )
-                            .fill(Color32::TRANSPARENT)
-                            .stroke(Stroke::NONE),
-                        );
-                    }
+                    self.render_app_menus(ui, ctx);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let close = ui.add_sized(
                             [44.0, WINDOW_BAR_HEIGHT],
@@ -65,7 +111,7 @@ impl TraceXApp {
                                 .stroke(Stroke::NONE),
                         );
                         if close.clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            self.request_shutdown(Instant::now());
                         }
                         let maximize = ui.add_sized(
                             [44.0, WINDOW_BAR_HEIGHT],
@@ -99,8 +145,15 @@ impl eframe::App for TraceXApp {
             theme::setup(ctx);
             self.theme_ready = true;
         }
+        self.intercept_window_close(ctx, Instant::now());
         self.poll();
-        self.check_auto_reconnect();
+        if self.shutdown.active() {
+            if self.advance_shutdown(Instant::now()) == shutdown::ShutdownAction::Close {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else {
+            self.check_auto_reconnect();
+        }
         ctx.request_repaint_after(Duration::from_millis(50));
 
         let copy_requested =
@@ -629,6 +682,7 @@ impl eframe::App for TraceXApp {
                     });
                 }
             });
+        self.render_shutdown_dialog(ctx);
     }
 }
 
@@ -642,64 +696,41 @@ mod monitor_view_tests {
 
     // No serial enumeration, worker thread, user directories, or disk access.
     fn app_without_io() -> TraceXApp {
-        TraceXApp {
-            ports: Arc::new(Mutex::new(Vec::new())),
-            selected_port: String::new(),
-            baud_rate: 115200,
-
-            connected: false,
-            paused: false,
-            serial_tx: None,
-            log_rx: None,
-            stop_flag: None,
-            last_connected_port: None,
-
-            logs: Vec::new(),
-            next_id: 0,
-
-            command_input: String::new(),
-            command_history: Vec::new(),
-            send_newline: true,
-            auto_clear_command: true,
-
-            search: String::new(),
-            selected: HashSet::new(),
-            filter_panel_open: false,
-            filter_exclude: false,
-            filter_results_height: 180.0,
-            scroll_to_log: None,
-            scroll_jump_settle_frames: 0,
-
-            auto_save_enabled: false,
-            auto_save_path: None,
-            auto_save_current_path: None,
-            auto_save: AutosaveController::default(),
-            auto_save_limit_mb: 25,
-            auto_save_bytes_written: 0,
-            auto_save_sequence: 0,
-            auto_save_error: None,
-            operation_error: None,
-
-            auto_scroll: true,
-            live_scroll_frames: 0,
-            ui_tabs: vec![UiTab {
-                title: "Monitor 1".to_string(),
-                setup: false,
-            }],
-            active_tab: 0,
-            show_info: true,
-            show_warn: true,
-            show_error: true,
-            theme_ready: false,
-
-            rate: 0.0,
-            rate_count: 0,
-            rate_timer: Instant::now(),
-
-            reconnect_cooldown: Instant::now(),
-        }
+        let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        app.auto_save_path = None;
+        app
     }
 
+    #[test]
+    fn os_close_is_cancelled_until_shutdown_is_explicitly_ready() {
+        let mut app = app_without_io();
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+        let output = ctx.run(input.clone(), |ctx| {
+            app.intercept_window_close(ctx, Instant::now())
+        });
+        assert!(app.shutdown.active());
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::CancelClose))
+        );
+        app.shutdown.force_close();
+        let output = ctx.run(input, |ctx| app.intercept_window_close(ctx, Instant::now()));
+        assert!(
+            !output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::CancelClose))
+        );
+    }
     #[test]
     fn opening_monitor_preserves_shared_capture_and_selection() {
         let mut app = app_without_io();

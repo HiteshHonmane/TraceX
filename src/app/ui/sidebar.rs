@@ -197,6 +197,39 @@ impl TraceXApp {
                     );
                 }
 
+                if let Some(error) = self.capture_error.as_ref() {
+                    ui.label(
+                        RichText::new(error)
+                            .monospace()
+                            .size(9.0)
+                            .color(theme::ERROR),
+                    );
+                }
+                let archive_ready = !self.connected
+                    && self.capture.is_none()
+                    && !self.auto_save.stopping
+                    && !self.session_archive_busy()
+                    && !self.shutdown.active();
+                if ui
+                    .add_enabled(archive_ready, egui::Button::new("Save Session…"))
+                    .on_hover_text(
+                        "Save all retained records to a new TraceX session file while disconnected",
+                    )
+                    .clicked()
+                {
+                    self.choose_save_session();
+                }
+                if ui
+                    .add_enabled(archive_ready, egui::Button::new("Open Session…"))
+                    .on_hover_text("Validate and reopen a TraceX session while disconnected")
+                    .clicked()
+                {
+                    self.choose_open_session();
+                }
+                if self.session_archive_busy() {
+                    ui.label("Session file operation in progress…");
+                }
+
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                     ui.add_space(10.0);
                     ui.add_sized(

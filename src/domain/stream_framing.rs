@@ -1,5 +1,5 @@
 /// Maximum pending line payload before emitting a continuation record.
-const MAX_FRAME_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 /// Frames a byte stream independently of read boundaries and UI frameworks.
 /// Invalid UTF-8 frames are represented as explicit, reversible hex records.

@@ -42,12 +42,11 @@ failure), and exits. The API never joins or waits on the UI thread: callers poll
 and visibly report an incomplete finalization rather than wait indefinitely.
 Blocking OS filesystem calls cannot be safely cancelled by this API.
 
-**Application-exit coordination is not implemented in this slice.** Dropping the
-controller requests Finish only on a best-effort basis and drops its receivers;
-accepted, pending, failed, or transport-queued payloads can be lost when the app
-closes. There is no crash recovery or raw binary durability guarantee. A future
-exit coordinator must retain the worker, drain all events and pending records,
-and enforce a user-visible deadline before allowing window closure.
+The [close coordinator](CLOSE-LIFECYCLE.md) intercepts normal window closure,
+stops capture, drains received records, then waits for Finish acknowledgement
+and worker completion. Failures or a ten-second deadline require an explicit
+keep-open or force-close decision. Drop remains best effort for abnormal teardown;
+process termination, crashes and force close can still lose pending data.
 
 ## Backpressure and failures
 
@@ -63,11 +62,11 @@ Result events are also bounded. If the UI stops draining them, the worker waits
 and the command queue fills, propagating backpressure without blocking the UI.
 These are command-count budgets, not byte budgets. The framing limit bounds
 current UART payload sizes; arbitrary future callers must enforce their own
-payload-size contract. The existing transport channel and retained log vector
-remain unbounded. This slice therefore does **not** claim bounded total capture
-memory. Storage failure freezes consumption while autosave is enabled, so queued
-transport data can continue growing until capture is stopped or autosave is
-disabled. Bounded transport backpressure is follow-up work.
+payload-size contract. The transport now uses bounded batches and a separate
+terminal payload slot; [retained history](HISTORY-RETENTION.md) has an admission
+budget. Storage failure stops capture and freezes consumption while autosave is
+enabled. Already received records remain pending. These accounting bounds are
+not a total process RSS guarantee or device-side flow-control guarantee.
 
 A write failure returns the complete original request, including text and record
 identifier, plus the confirmed prefix byte count. The application retains failed
@@ -95,12 +94,13 @@ an explicit recovery artifact; TraceX does not automatically retry partial write
 Only records covered by the successful export acknowledgement are released from
 failure retention. Later failures remain available for another export.
 
-This export also covers the legacy paused-record path, where payloads are not
-retained in the visible log vector. The ordinary filtered text export is not a
+Captured records remain in visible history after admission; the unused internal
+paused-record discard path has been removed. Ordinary filtered text export is not a
 substitute for recovery export. Recoveries remain in memory until exported and
 are not crash safe. If the worker itself terminates unexpectedly, recovery export
 through that worker may be unavailable; worker restart and exit recovery remain
-follow-up work.
+follow-up work for unexpected worker termination. Normal exit coordination is
+implemented separately.
 
 ## Verification
 
@@ -110,5 +110,5 @@ creation failure, terminal synchronization failure, and failed Start/Stop
 followed by queued writes.
 [Controller tests](../../src/app/autosave_tests.rs) cover asynchronous enable and
 creation, ordered stop, queue saturation with one retained write, manual final
-tail drain, failed creation, paused payload retention, and recovery export with
+tail drain, failed creation, visible payload retention, and recovery export with
 existing-file protection. Temporary filesystem fixtures use no serial hardware.

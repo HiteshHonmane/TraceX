@@ -1,3 +1,4 @@
+use crate::domain::history_budget::HistoryBudget;
 use crate::domain::log::*;
 use crate::domain::query::{LogQuery, QueryScope, SeveritySelection};
 use chrono::Local;
@@ -5,10 +6,8 @@ use directories::UserDirs;
 use eframe::egui::{self, Color32, FontId, RichText, Stroke, Vec2};
 use serialport::available_ports;
 use std::collections::HashSet;
-use std::fs;
-use std::io::{Read, Write as IoWrite};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -58,6 +57,15 @@ fn register_submitted_command(history: &mut Vec<String>, command: &str) -> Optio
 // ═══════════════════════════════════════════════════════════════════════════════
 
 impl TraceXApp {
+    fn can_retain_line_parts(&self, length: usize, capacity: usize) -> bool {
+        !self.history_limit_reached && self.history.can_retain_line_parts(length, capacity)
+    }
+
+    fn rebuild_history_accounting(&mut self) {
+        self.history.rebuild(&self.logs);
+        self.history_limit_reached = false;
+    }
+
     fn log_query(&self) -> LogQuery {
         LogQuery::new(
             &self.search,
@@ -76,7 +84,10 @@ impl TraceXApp {
 
 mod autosave;
 mod autosave_worker;
+mod capture;
 mod log_format;
+mod session_archive;
+mod shutdown;
 mod storage;
 use autosave::AutosaveController;
 
@@ -250,15 +261,21 @@ struct TraceXApp {
 
     // Connection
     connected: bool,
-    paused: bool,
-    serial_tx: Option<Sender<Vec<u8>>>,
-    log_rx: Option<Receiver<String>>,
+    serial_tx: Option<SyncSender<Vec<u8>>>,
+    capture: Option<capture::CaptureInbox>,
+    next_capture_batch: u64,
+    capture_error: Option<String>,
     stop_flag: Option<Arc<Mutex<bool>>>,
     last_connected_port: Option<String>,
 
     // Logs
     logs: Vec<LogEntry>,
     next_id: usize,
+    history: HistoryBudget,
+    history_dirty: bool,
+    history_limit_reached: bool,
+    shutdown: shutdown::ShutdownCoordinator,
+    session_archive: session_archive::SessionArchive,
 
     // Command
     command_input: String,
@@ -341,14 +358,20 @@ impl TraceXApp {
             baud_rate: 115200,
 
             connected: false,
-            paused: false,
             serial_tx: None,
-            log_rx: None,
+            capture: None,
+            next_capture_batch: 0,
+            capture_error: None,
             stop_flag: None,
             last_connected_port: None,
 
             logs: Vec::new(),
             next_id: 0,
+            history: HistoryBudget::default(),
+            history_dirty: false,
+            history_limit_reached: false,
+            shutdown: shutdown::ShutdownCoordinator::default(),
+            session_archive: session_archive::SessionArchive::default(),
 
             command_input: String::new(),
             command_history: Vec::new(),
@@ -485,13 +508,18 @@ impl TraceXApp {
             &entry.message,
         ));
 
-        if !self.paused {
-            self.logs.push(entry);
-        }
+        self.history.record_entry(&entry);
+        self.logs.push(entry);
+        self.history_dirty = true;
     }
 
     fn connect(&mut self) {
-        if self.log_rx.is_some() || self.auto_save.stopping {
+        if self.capture.is_some()
+            || self.auto_save.stopping
+            || self.shutdown.active()
+            || self.session_archive_busy()
+            || self.history_limit_reached
+        {
             self.operation_error =
                 Some("Wait for the previous connection to finish disconnecting.".to_owned());
             return;
@@ -512,21 +540,25 @@ impl TraceXApp {
             }
         };
 
-        let (log_tx, log_rx) = channel();
-        let (cmd_tx, cmd_rx) = channel::<Vec<u8>>();
         let stop = Arc::new(Mutex::new(false));
-        let stop_clone = Arc::clone(&stop);
-
-        self.log_rx = Some(log_rx);
-        self.serial_tx = Some(cmd_tx);
+        let (inbox, commands) = match capture::start_reader(
+            port,
+            capture::CaptureBudget::default(),
+            Arc::clone(&stop),
+            self.next_capture_batch,
+        ) {
+            Ok(reader) => reader,
+            Err(error) => {
+                self.operation_error = Some(format!("Could not start capture: {error}"));
+                return;
+            }
+        };
+        self.capture = Some(inbox);
+        self.serial_tx = Some(commands);
         self.stop_flag = Some(stop);
-
-        thread::spawn(move || {
-            Self::serial_thread(port, log_tx, cmd_rx, stop_clone);
-        });
+        self.capture_error = None;
 
         self.connected = true;
-        self.paused = false;
         self.operation_error = None;
         self.last_connected_port = Some(self.selected_port.clone());
 
@@ -548,74 +580,58 @@ impl TraceXApp {
         self.last_connected_port = None;
     }
 
-    fn serial_thread(
-        mut port: impl Read + IoWrite,
-        log_tx: Sender<String>,
-        cmd_rx: Receiver<Vec<u8>>,
-        stop: Arc<Mutex<bool>>,
-    ) {
-        let mut buf = [0u8; 4096];
-        let mut framer = crate::domain::stream_framing::StreamFramer::default();
-
-        loop {
-            if stop.lock().map(|f| *f).unwrap_or(true) {
-                break;
-            }
-
-            // Check for commands to send
-            match cmd_rx.try_recv() {
-                Ok(data) => {
-                    if port.write_all(&data).is_err() {
-                        // Port disconnected
-                        break;
-                    }
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => break,
-            }
-
-            // Read incoming data
-            match port.read(&mut buf) {
-                Ok(n) if n > 0 => {
-                    framer.push(&buf[..n], |line| {
-                        let _ = log_tx.send(line);
-                    });
-                }
-                Ok(_) => {}
-                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(_) => {
-                    // Port disconnected unexpectedly
-                    break;
-                }
-            }
-
-            thread::sleep(Duration::from_millis(1));
-        }
-        if let Some(line) = framer.finish() {
-            let _ = log_tx.send(line);
-        }
-        // Release the transport before channel closure permits reconnect.
-        drop(port);
-        drop(log_tx);
-    }
-
     fn poll(&mut self) {
+        self.poll_session_archive();
         self.poll_auto_save();
-        // Limit per-frame work and stop consuming when storage applies backpressure.
+        if self.auto_save_enabled && self.auto_save_error.is_some() && self.capture.is_some() {
+            self.disconnect();
+        }
+        self.poll_capture_status();
+        // A record remains in its bounded batch until history and storage accept it.
         for _ in 0..256 {
-            if !self.can_ingest_log() {
+            if !self.can_ingest_log() || self.history_limit_reached || self.session_archive_busy() {
                 break;
             }
-            let received = self.log_rx.as_ref().map(Receiver::try_recv);
-            match received {
-                Some(Ok(line)) => self.record_log_line(line),
-                Some(Err(TryRecvError::Disconnected)) => {
-                    self.handle_disconnection();
+            let shape = self.capture.as_mut().and_then(|capture| {
+                capture
+                    .peek_record()
+                    .map(|line| (line.len(), line.capacity()))
+            });
+            if let Some((length, capacity)) = shape {
+                if self.next_id == usize::MAX {
+                    self.capture_error = Some("Capture stopped because record identifiers were exhausted. Pending received data remains retained; save this session before closing.".to_owned());
+                    self.history_limit_reached = true;
+                    self.disconnect();
                     break;
                 }
-                Some(Err(TryRecvError::Empty)) | None => break,
+                if !self.can_retain_line_parts(length, capacity) {
+                    self.history_limit_reached = true;
+                    self.capture_error = Some("Capture stopped because retained history reached its safety limit. Export retained logs, then clear to process pending received data. Additional device output may be missing.".to_owned());
+                    self.disconnect();
+                    break;
+                }
+                if let Some(record) = self
+                    .capture
+                    .as_mut()
+                    .and_then(capture::CaptureInbox::pop_record)
+                {
+                    self.record_log_line(record);
+                }
+            } else {
+                // Filling an empty inbox can discover sender loss or publish a
+                // terminal tail. Observe that status before dropping ownership.
+                self.poll_capture_status();
+                if self
+                    .capture
+                    .as_ref()
+                    .is_some_and(capture::CaptureInbox::is_drained)
+                {
+                    self.handle_disconnection();
+                }
+                break;
             }
         }
+        self.poll_capture_status();
 
         if self.rate_timer.elapsed() >= Duration::from_secs(1) {
             self.rate = self.rate_count as f32;
@@ -627,7 +643,7 @@ impl TraceXApp {
     fn handle_disconnection(&mut self) {
         // Clean up connection state but keep last_connected_port for auto-reconnect
         self.connected = false;
-        self.log_rx = None;
+        self.capture = None;
         self.serial_tx = None;
         self.stop_flag = None;
         self.stop_auto_save();
@@ -639,7 +655,11 @@ impl TraceXApp {
         // Auto-reconnect if we were connected and the same port is available again
         // Add a small cooldown to avoid rapid reconnection attempts
         if !self.connected
-            && self.log_rx.is_none()
+            && self.capture.is_none()
+            && !self.shutdown.active()
+            && !self.history_limit_reached
+            && !self.session_archive_busy()
+            && self.auto_save_error.is_none()
             && !self.auto_save.stopping
             && self.reconnect_cooldown.elapsed() >= Duration::from_millis(500)
             && let Some(ref last_port) = self.last_connected_port
@@ -655,27 +675,83 @@ impl TraceXApp {
         }
     }
 
-    fn send_command(&mut self, cmd: &str) {
-        let Some(cmd) = register_submitted_command(&mut self.command_history, cmd) else {
+    fn send_command(&mut self, command: &str) -> bool {
+        let command = command.trim();
+        if command.is_empty() {
+            return false;
+        }
+        let size = command
+            .len()
+            .saturating_add(if self.send_newline { 2 } else { 0 });
+        if size > capture::MAX_COMMAND_BYTES {
+            self.operation_error = Some(format!(
+                "Command exceeds the {}-byte limit; edit it before retrying.",
+                capture::MAX_COMMAND_BYTES
+            ));
+            self.command_input = command.to_owned();
+            return false;
+        }
+        let Some(command) = register_submitted_command(&mut self.command_history, command) else {
+            return false;
+        };
+        let mut data = command.as_bytes().to_vec();
+        if self.send_newline {
+            data.extend_from_slice(b"\r\n");
+        }
+        let error = match self.serial_tx.as_ref() {
+            Some(sender) if self.connected => match sender.try_send(data) {
+                Ok(()) => {
+                    self.operation_error = None;
+                    return true;
+                }
+                Err(TrySendError::Full(_)) => {
+                    "Command queue is full; the command is retained for retry."
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    "Could not send command because the connection ended."
+                }
+            },
+            _ => "Connect to a device before sending commands.",
+        };
+        self.command_input = command;
+        self.operation_error = Some(error.to_owned());
+        false
+    }
+
+    fn poll_capture_status(&mut self) {
+        let Some(inbox) = &mut self.capture else {
             return;
         };
-
-        let mut data = cmd.as_bytes().to_vec();
-        if self.send_newline {
-            data.push(b'\r');
-            data.push(b'\n');
+        inbox.poll_status();
+        if let Some(sequence) = inbox.current_batch_id() {
+            self.next_capture_batch = self.next_capture_batch.max(sequence.saturating_add(1));
         }
-
-        match self.serial_tx.as_ref() {
-            Some(tx) if tx.send(data).is_ok() => self.operation_error = None,
-            Some(_) => {
-                self.operation_error =
-                    Some("Could not send command because the connection ended.".to_owned());
+        if let Some(reason) = inbox.terminal_reason() {
+            self.next_capture_batch = self.next_capture_batch.max(inbox.next_batch_id());
+            if reason.requires_attention() && self.capture_error.is_none() {
+                let usage = inbox.usage();
+                self.capture_error = Some(format!(
+                    "{} Received {} bytes; {} records processed; {} accounted backlog bytes; {} host batches rejected from the inbox and retained separately.",
+                    reason.message(),
+                    inbox
+                        .received_bytes()
+                        .map_or_else(|| "unknown".to_owned(), |bytes| bytes.to_string()),
+                    inbox.processed_records(),
+                    usage.bytes,
+                    inbox.rejected_batches()
+                ));
             }
-            None => {
-                self.operation_error =
-                    Some("Connect to a device before sending commands.".to_owned());
+            if matches!(
+                reason,
+                capture::CaptureStopReason::Saturated
+                    | capture::CaptureStopReason::WorkerEndedUnexpectedly
+                    | capture::CaptureStopReason::SequenceExhausted
+                    | capture::CaptureStopReason::ConsumerGone
+            ) {
+                self.last_connected_port = None;
             }
+            self.connected = false;
+            self.serial_tx = None;
         }
     }
 
@@ -704,22 +780,20 @@ impl TraceXApp {
     }
 
     fn clear(&mut self) {
+        if self.session_archive_busy() {
+            self.operation_error =
+                Some("Wait for the session operation before clearing logs.".to_owned());
+            return;
+        }
         self.logs.clear();
+        self.history_dirty = false;
         self.selected.clear();
-        self.next_id = 0;
+        self.history.reset();
+        self.history_limit_reached = false;
     }
 
     fn export_logs(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Log", &["log", "txt"])
-            .set_file_name("export.log")
-            .save_file()
-        {
-            let content = self.export_text();
-            self.operation_error = fs::write(path, content)
-                .err()
-                .map(|error| format!("Could not export logs: {error}"));
-        }
+        self.choose_export_logs();
     }
 }
 

@@ -65,8 +65,8 @@ fn saturated_queue_retains_one_write_and_stops_ingest_until_manual_tail_drains()
     app.auto_save_enabled = true;
     app.apply_auto_save_enabled_change();
     entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-    let (sender, receiver) = mpsc::channel();
-    app.log_rx = Some(receiver);
+    let (sender, inbox) = crate::app::capture::CaptureInbox::test_channel();
+    app.capture = Some(inbox);
     app.connected = true;
     for line in ["first", "second", "final tail"] {
         sender.send(line.to_owned()).unwrap();
@@ -88,7 +88,7 @@ fn saturated_queue_retains_one_write_and_stops_ingest_until_manual_tail_drains()
     drop(sender);
     release_tx.send(()).unwrap();
     until(&mut app, |app| {
-        app.log_rx.is_none() && !app.auto_save.stopping
+        app.capture.is_none() && !app.auto_save.stopping
     });
     assert_eq!(app.logs.len(), 3);
     assert!(app.auto_save.pending.is_none());
@@ -104,7 +104,7 @@ fn saturated_queue_retains_one_write_and_stops_ingest_until_manual_tail_drains()
 }
 
 #[test]
-fn failed_start_preserves_paused_payload_and_recovery_export_never_overwrites() {
+fn failed_start_preserves_visible_payload_and_recovery_export_never_overwrites() {
     let mut app = app();
     let root = directory("autosave-recovery");
     let blocker = root.join("not-a-directory");
@@ -112,12 +112,11 @@ fn failed_start_preserves_paused_payload_and_recovery_export_never_overwrites() 
     app.auto_save_path = Some(blocker.join("capture.log"));
     app.auto_save_enabled = true;
     app.apply_auto_save_enabled_change();
-    app.paused = true;
-    app.record_log_line("paused payload".to_owned());
+    app.record_log_line("retained payload".to_owned());
     until(&mut app, |app| {
         app.auto_save.failed && app.auto_save.recovery.len() == 1
     });
-    assert!(app.logs.is_empty());
+    assert_eq!(app.logs[0].raw, "retained payload");
     assert!(!app.can_ingest_log());
     assert!(app.auto_save_error.is_some());
     let exported = root.join("recovery.json");
@@ -136,7 +135,7 @@ fn failed_start_preserves_paused_payload_and_recovery_export_never_overwrites() 
         recovery["records"][0]["request"]["payload"]
             .as_str()
             .unwrap()
-            .ends_with("paused payload\n")
+            .ends_with("retained payload\n")
     );
     assert_eq!(recovery["records"][0]["written_prefix_bytes"], 0);
     assert!(recovery["notice"].as_str().unwrap().contains("duplicate"));
@@ -161,8 +160,8 @@ fn failed_pending_write_stays_in_fifo_until_earlier_failures_are_returned() {
     app.auto_save_enabled = true;
     app.apply_auto_save_enabled_change();
     entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-    let (sender, receiver) = mpsc::channel();
-    app.log_rx = Some(receiver);
+    let (sender, inbox) = crate::app::capture::CaptureInbox::test_channel();
+    app.capture = Some(inbox);
     sender.send("earlier".to_owned()).unwrap();
     sender.send("later".to_owned()).unwrap();
     app.poll();
@@ -188,5 +187,114 @@ fn failed_pending_write_stays_in_fifo_until_earlier_failures_are_returned() {
     );
     assert!(app.auto_save.pending.is_none());
     fs::remove_file(blocker).unwrap();
+    fs::remove_dir(root).unwrap();
+}
+
+#[test]
+fn stalled_storage_causes_bounded_capture_stop_then_saves_every_received_record() {
+    use std::collections::VecDeque;
+    use std::io::{self, Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct ReadBatches {
+        chunks: VecDeque<Vec<u8>>,
+        reads: Arc<AtomicUsize>,
+    }
+    impl Read for ReadBatches {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let bytes = self.chunks.pop_front().unwrap();
+            output[..bytes.len()].copy_from_slice(&bytes);
+            Ok(bytes.len())
+        }
+    }
+    impl Write for ReadBatches {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut app = app();
+    let root = directory("capture-storage-stall");
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    app.auto_save.worker = Some(AutosaveWorker::spawn_gated(1, 1, entered_tx, release_rx).unwrap());
+    app.auto_save_path = Some(root.join("capture.log"));
+    app.auto_save_enabled = true;
+    app.apply_auto_save_enabled_change();
+    entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(Mutex::new(false));
+    let budget = crate::app::capture::CaptureBudget {
+        queued_batches: 1,
+        ..crate::app::capture::CaptureBudget::default()
+    };
+    let (inbox, commands) = crate::app::capture::start_reader(
+        ReadBatches {
+            chunks: VecDeque::from([
+                b"first\n".to_vec(),
+                b"second\nfinal tail".to_vec(),
+                b"must not read\n".to_vec(),
+            ]),
+            reads: Arc::clone(&reads),
+        },
+        budget,
+        Arc::clone(&stop),
+        0,
+    )
+    .unwrap();
+    app.capture = Some(inbox);
+    app.serial_tx = Some(commands);
+    app.stop_flag = Some(stop);
+    app.connected = true;
+    app.last_connected_port = Some("fake".to_owned());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let inbox = app.capture.as_mut().unwrap();
+        inbox.poll_status();
+        if inbox.terminal_reason().is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    assert!(app.capture.as_ref().unwrap().usage().bytes <= budget.queued_bytes);
+    app.poll();
+    assert!(app.auto_save.pending.is_some());
+    assert_eq!(app.logs.len(), 2);
+    assert!(app.last_connected_port.is_none());
+    assert!(
+        app.capture_error
+            .as_deref()
+            .unwrap()
+            .contains("could not keep up")
+    );
+    app.disconnect();
+    assert_eq!(
+        app.capture.as_ref().unwrap().terminal_reason(),
+        Some(&crate::app::capture::CaptureStopReason::Saturated)
+    );
+    release_tx.send(()).unwrap();
+    until(&mut app, |app| {
+        app.capture.is_none() && !app.auto_save.stopping
+    });
+    assert_eq!(
+        app.logs
+            .iter()
+            .map(|entry| entry.raw.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second", "final tail"]
+    );
+    let path = app.auto_save_current_path.clone().unwrap();
+    let saved = fs::read_to_string(&path).unwrap();
+    let lines: Vec<_> = saved.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].ends_with("first"));
+    assert!(lines[1].ends_with("second"));
+    assert!(lines[2].ends_with("final tail"));
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    fs::remove_file(path).unwrap();
     fs::remove_dir(root).unwrap();
 }

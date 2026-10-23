@@ -110,22 +110,28 @@ fn extract_tag(text: &str) -> Option<String> {
 
     for (marker_start, _) in text.match_indices("][") {
         let candidate_start = marker_start + 2;
-        let Some(candidate_end) = text[candidate_start..].find("] ") else {
+        let candidate = &text[candidate_start..];
+        if !candidate
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+        {
             continue;
-        };
-        let candidate = &text[candidate_start..candidate_start + candidate_end];
-        let mut characters = candidate.chars();
-        let valid = characters
-            .next()
-            .is_some_and(|first| first.is_ascii_alphabetic())
-            && characters.all(|character| character.is_ascii_alphanumeric() || character == '_');
-
-        if valid {
-            last = Some(candidate.to_owned());
+        }
+        // Stop at the first invalid tag byte, rather than repeatedly searching
+        // the remaining line for a distant "] ". Adjacent malformed markers
+        // therefore cannot turn one bounded input record into quadratic work.
+        let end = candidate
+            .bytes()
+            .position(|byte| !byte.is_ascii_alphanumeric() && byte != b'_');
+        if let Some(end) = end
+            && candidate.as_bytes()[end..].starts_with(b"] ")
+        {
+            last = Some(&candidate[..end]);
         }
     }
 
-    last
+    last.map(str::to_owned)
 }
 
 fn extract_message(text: &str) -> String {
@@ -178,5 +184,31 @@ mod tests {
         assert_eq!(entry.level, LogLevel::Log);
         assert_eq!(entry.tag, None);
         assert_eq!(entry.message, "plain device output");
+    }
+
+    #[test]
+    fn tag_parser_rejects_malformed_markers_and_keeps_last_valid_ascii_tag() {
+        for malformed in [
+            "][ABC",
+            "][ABC]",
+            "][9ABC] ",
+            "][é] ",
+            "][A-B] ",
+            "][ABC]X] ",
+        ] {
+            assert_eq!(extract_tag(malformed), None, "{malformed}");
+        }
+        assert_eq!(
+            extract_tag("[t][FIRST] [t][LAST_2] message"),
+            Some("LAST_2".into())
+        );
+        assert_eq!(
+            extract_tag("[t][FIRST] [t][invalid-thing] message"),
+            Some("FIRST".into())
+        );
+        let malformed = format!("{}[FINAL] message", "][A".repeat(16_000));
+        assert_eq!(extract_tag(&malformed), None);
+        let valid_tail = format!("{}][FINAL] message", "][A".repeat(16_000));
+        assert_eq!(extract_tag(&valid_tail), Some("FINAL".into()));
     }
 }

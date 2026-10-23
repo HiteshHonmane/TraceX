@@ -8,15 +8,17 @@ LF does not create an additional unterminated empty record.
 
 On worker shutdown (including transport failure, command write failure, and
 manual disconnect), a nonempty unterminated payload is emitted once. Timeouts do
-not finish a record. The worker releases its transport after emitting this final
-record and then closes its log channel. The application drains all queued records
-before interpreting channel closure as session completion and closing autosave.
+not finish a record. Queued batches drain before the final payload held in a
+separate terminal slot. The worker releases its transport before publishing the
+terminal payload and closing its batch channel. The application drains all
+received records before completing disconnect and closing autosave.
 Manual disconnect requests cancellation without joining the worker on the UI
 thread; it retains the log receiver and autosave until that drain completes.
 Reconnect is rejected while the previous log receiver is still active, preventing
 old records from being attached to a new connection. This guarantees orderly
-disconnect delivery while the application continues polling, not crash recovery
-or application-exit durability.
+disconnect delivery while the application continues polling. The
+[close coordinator](engineering/CLOSE-LIFECYCLE.md) handles normal exit; crashes
+and force close can still lose pending records.
 
 A frame containing malformed or incomplete UTF-8 is rendered in full as
 `[TraceX invalid UTF-8 bytes: 61 FF 00]`, with two uppercase hexadecimal digits
@@ -33,8 +35,21 @@ one extra CR byte may be held to recognize CRLF at the size boundary. Pending
 payload is therefore bounded by 65,537 bytes, independent of session length.
 Continuation records use the existing log record format and do not include a
 continuation marker; exports cannot recover the original logical line boundaries.
-This bound applies to the framer, not the existing application channel or retained
-log collection.
+This bound applies to the framer. The capture inbox separately limits queued
+batches, accounted bytes and record count. Saturation stops further reads and
+preserves the rejected read batch plus final fragment outside the full queue.
+The application reports possible missing subsequent device output and disables
+automatic reconnect. [Retained history](engineering/HISTORY-RETENTION.md) also
+has a safety budget and never silently evicts records.
 
 The pure framing implementation and regression tests live in
 [`src/domain/stream_framing.rs`](../src/domain/stream_framing.rs).
+
+Parsed ASCII tags stop at the first invalid character after a `][` marker.
+This preserves the last valid tag while preventing repeated malformed markers
+from causing quadratic scans of a long record. A Windows optimized standalone
+comparison on 2026-10-23 used a 48,016-byte input (`"][A"` repeated 16,000 times,
+then `"][FINAL] payload`), 20 parses per run, and three runs. The prior tag
+scanner took 91.3–93.1 ms per record; the revised scanner took 0.069–0.070 ms.
+Both returned the same tag. This isolates tag scanning; it is not a UI, full
+parser, capture-throughput or physical-device benchmark.

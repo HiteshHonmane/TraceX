@@ -156,8 +156,7 @@ impl TraceXApp {
                                     && ui.input(|input| input.key_pressed(egui::Key::Enter));
                                 if enter {
                                     let command = self.command_input.clone();
-                                    self.send_command(&command);
-                                    if self.auto_clear_command {
+                                    if self.send_command(&command) && self.auto_clear_command {
                                         self.command_input.clear();
                                     }
                                 }
@@ -196,8 +195,7 @@ impl TraceXApp {
                         .clicked()
                     {
                         let command = self.command_input.clone();
-                        self.send_command(&command);
-                        if self.auto_clear_command {
+                        if self.send_command(&command) && self.auto_clear_command {
                             self.command_input.clear();
                         }
                     }
