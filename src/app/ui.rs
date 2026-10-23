@@ -6,6 +6,96 @@ mod sidebar;
 mod tabs;
 
 impl TraceXApp {
+    fn render_filter_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        results: &[usize],
+        content_width: f32,
+    ) -> usize {
+        let mut rendered = 0;
+        // The allocated row and spacing together remain exactly 25 points.
+        let row_height = (25.0 - ui.spacing().item_spacing.y).max(1.0);
+        egui::ScrollArea::both()
+            .id_salt("filter_results_scroll")
+            .auto_shrink([false; 2])
+            .show_rows(ui, row_height, results.len(), |ui, range| {
+                ui.set_min_width(content_width);
+                for row in range {
+                    let index = results[row];
+                    rendered += 1;
+                    let entry = &self.logs[index];
+                    let (id, timestamp, level, message) =
+                        (&entry.id, &entry.timestamp, &entry.level, &entry.message);
+                    let selected = self.selected.contains(id);
+                    let (rect, response) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), row_height),
+                        egui::Sense::click(),
+                    );
+                    let fill = if selected {
+                        theme::ACCENT.linear_multiply(0.20)
+                    } else if response.hovered() {
+                        theme::BG_HOVER
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    ui.painter().rect(
+                        rect,
+                        0.0,
+                        fill,
+                        if selected {
+                            Stroke::new(1.0_f32, theme::ACCENT.linear_multiply(0.85))
+                        } else {
+                            Stroke::NONE
+                        },
+                    );
+                    if selected {
+                        ui.painter().vline(
+                            rect.left() + 2.0,
+                            rect.y_range().shrink(3.0),
+                            Stroke::new(3.0_f32, theme::ACCENT),
+                        );
+                    }
+                    let center_y = rect.center().y;
+                    ui.painter().text(
+                        egui::pos2(rect.left() + 14.0, center_y),
+                        egui::Align2::LEFT_CENTER,
+                        timestamp,
+                        FontId::monospace(9.5),
+                        theme::TEXT_MUTED,
+                    );
+                    ui.painter().text(
+                        egui::pos2(rect.left() + 116.0, center_y),
+                        egui::Align2::LEFT_CENTER,
+                        level.label(),
+                        FontId::monospace(9.5),
+                        theme::log_level_color(*level),
+                    );
+                    let message_clip = egui::Rect::from_min_max(
+                        egui::pos2(rect.left() + 158.0, rect.top()),
+                        rect.right_bottom(),
+                    );
+                    ui.painter().with_clip_rect(message_clip).text(
+                        egui::pos2(rect.left() + 158.0, center_y),
+                        egui::Align2::LEFT_CENTER,
+                        message,
+                        FontId::monospace(10.5),
+                        theme::TEXT,
+                    );
+                    let response = response
+                        .on_hover_text("Jump to this log in the upper pane • Right-click to copy");
+                    add_copy_row_menu(&response, ctx, entry, &self.logs, &self.selected);
+                    if response.clicked() {
+                        self.selected.clear();
+                        self.selected.insert(*id);
+                        self.scroll_to_log = Some(*id);
+                        self.scroll_jump_settle_frames = 2;
+                    }
+                }
+            });
+        rendered
+    }
+
     fn intercept_window_close(&mut self, ctx: &egui::Context, now: Instant) {
         if ctx.input(|input| input.viewport().close_requested()) && !self.shutdown.allows_close() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -147,6 +237,7 @@ impl eframe::App for TraceXApp {
         }
         self.intercept_window_close(ctx, Instant::now());
         self.poll();
+        self.refresh_query_view();
         if self.shutdown.active() {
             if self.advance_shutdown(Instant::now()) == shutdown::ShutdownAction::Close {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -253,7 +344,7 @@ impl eframe::App for TraceXApp {
                                         } else {
                                             theme::BG_INPUT
                                         })
-                                                .stroke(Stroke::new(1.0_f32, theme::tint(theme::INFO, 92)))
+                                        .stroke(Stroke::new(1.0_f32, theme::tint(theme::INFO, 92)))
                                         .rounding(4.0),
                                     )
                                     .clicked()
@@ -275,7 +366,10 @@ impl eframe::App for TraceXApp {
                                         } else {
                                             theme::BG_INPUT
                                         })
-                                                .stroke(Stroke::new(1.0_f32, theme::tint(theme::WARNING, 92)))
+                                        .stroke(Stroke::new(
+                                            1.0_f32,
+                                            theme::tint(theme::WARNING, 92),
+                                        ))
                                         .rounding(4.0),
                                     )
                                     .clicked()
@@ -297,7 +391,7 @@ impl eframe::App for TraceXApp {
                                         } else {
                                             theme::BG_INPUT
                                         })
-                                                .stroke(Stroke::new(1.0_f32, theme::tint(theme::ERROR, 92)))
+                                        .stroke(Stroke::new(1.0_f32, theme::tint(theme::ERROR, 92)))
                                         .rounding(4.0),
                                     )
                                     .clicked()
@@ -341,33 +435,48 @@ impl eframe::App for TraceXApp {
                                             .add_sized(
                                                 [36.0, 32.0],
                                                 egui::Button::new(
-                                                    RichText::new("↓")
-                                                        .size(16.0)
-                                                        .color(if self.auto_scroll {
+                                                    RichText::new("↓").size(16.0).color(
+                                                        if self.auto_scroll {
                                                             theme::ACCENT
                                                         } else {
                                                             theme::TEXT_MUTED
-                                                        }),
+                                                        },
+                                                    ),
                                                 )
                                                 .fill(theme::BG_INPUT)
-                                            .stroke(Stroke::new(1.0_f32, theme::BORDER)),
+                                                .stroke(Stroke::new(1.0_f32, theme::BORDER)),
                                             )
                                             .on_hover_text("Follow incoming logs")
                                             .clicked();
                                         if follow_clicked {
                                             self.auto_scroll = !self.auto_scroll;
                                             self.live_scroll_frames =
-                                                live_scroll_frames_after_toggle(true, self.auto_scroll);
+                                                live_scroll_frames_after_toggle(
+                                                    true,
+                                                    self.auto_scroll,
+                                                );
                                         }
                                         ui.label(
                                             RichText::new(format!(
-                                                "{:.0}/s  ·  {} lines",
+                                                "{:.0}/s  ·  {} lines{}",
                                                 self.rate,
-                                                self.logs.len()
+                                                self.logs.len(),
+                                                if self.query_failure().is_some() {
+                                                    " · Search failed"
+                                                } else if self.query_pending() {
+                                                    " · Searching…"
+                                                } else {
+                                                    ""
+                                                }
                                             ))
                                             .monospace()
                                             .size(9.0)
                                             .color(theme::TEXT_MUTED),
+                                        )
+                                        .on_hover_text(
+                                            self.query_failure().unwrap_or(
+                                                "Search results update in the background.",
+                                            ),
                                         );
                                     },
                                 );
@@ -377,8 +486,13 @@ impl eframe::App for TraceXApp {
                 ui.separator();
                 ui.spacing_mut().item_spacing.y = previous_item_spacing_y;
 
-                let rows = self.query_indices(QueryScope::Main);
-                let selected_copy = selected_log_text(&self.logs, &self.selected);
+                self.refresh_query_view();
+                let snapshot = self
+                    .query_snapshot()
+                    .filter(|result| result.record_count <= self.logs.len());
+                let rows = snapshot
+                    .as_ref()
+                    .map_or(&[][..], |result| result.rows.as_slice());
                 const LOG_ROW_HEIGHT: f32 = 30.0;
                 let jump_target = self.scroll_to_log;
                 if jump_target.is_some() {
@@ -399,12 +513,17 @@ impl eframe::App for TraceXApp {
                     let row_height_sans_spacing =
                         (LOG_ROW_HEIGHT - ui.spacing().item_spacing.y).max(1.0);
                     let target_index = jump_target.and_then(|target_id| {
-                        rows.iter().position(|&index| self.logs[index].id == target_id)
+                        rows.iter()
+                            .position(|&index| self.logs[index].id == target_id)
                     });
-                    let content_width = log_content_width(
-                        rows.iter().map(|&index| self.logs[index].message.as_str()),
-                        ui.available_width(),
-                    );
+                    if snapshot.is_none() {
+                        ui.label(self.query_failure().unwrap_or("Searching…"));
+                        return;
+                    }
+                    let content_width = snapshot
+                        .as_ref()
+                        .map_or(0.0, |result| result.main_width)
+                        .max(ui.available_width());
                     let mut log_scroll = egui::ScrollArea::both()
                         .id_salt("primary_log_scroll")
                         .auto_shrink([false; 2])
@@ -423,39 +542,28 @@ impl eframe::App for TraceXApp {
                             upper_height,
                         ));
                     }
-                    log_scroll.show_rows(
-                        ui,
-                        row_height_sans_spacing,
-                        rows.len(),
-                        |ui, range| {
-                            ui.set_min_width(content_width);
-                            for i in range {
-                                let entry = &self.logs[rows[i]];
-                                let (id, ts, level, msg) = (&entry.id, &entry.timestamp, &entry.level, &entry.message);
-                                let selected = self.selected.contains(id);
-                                let line = format_log_line(ts, *level, msg);
-                                let response =
-                                    render_primary_log_row(ui, i + 1, ts, *level, msg, selected)
-                                        .on_hover_text(
-                                            "Click to select • Right-click to copy this row",
-                                        );
-                                add_copy_row_menu(
-                                    &response,
-                                    ctx,
-                                    &line,
-                                    selected_copy.as_deref(),
-                                    self.selected.len(),
-                                );
-                                if response.clicked() {
-                                    if self.selected.contains(id) {
-                                        self.selected.remove(id);
-                                    } else {
-                                        self.selected.insert(*id);
-                                    }
+                    log_scroll.show_rows(ui, row_height_sans_spacing, rows.len(), |ui, range| {
+                        ui.set_min_width(content_width);
+                        for i in range {
+                            let entry = &self.logs[rows[i]];
+                            let (id, ts, level, msg) =
+                                (&entry.id, &entry.timestamp, &entry.level, &entry.message);
+                            let selected = self.selected.contains(id);
+                            let response =
+                                render_primary_log_row(ui, i + 1, ts, *level, msg, selected)
+                                    .on_hover_text(
+                                        "Click to select • Right-click to copy this row",
+                                    );
+                            add_copy_row_menu(&response, ctx, entry, &self.logs, &self.selected);
+                            if response.clicked() {
+                                if self.selected.contains(id) {
+                                    self.selected.remove(id);
+                                } else {
+                                    self.selected.insert(*id);
                                 }
                             }
-                        },
-                    );
+                        }
+                    });
                     if jump_target.is_some() {
                         if self.scroll_jump_settle_frames > 0 {
                             self.scroll_jump_settle_frames -= 1;
@@ -484,16 +592,23 @@ impl eframe::App for TraceXApp {
                     ui.painter().hline(
                         divider_rect.x_range(),
                         divider_rect.center().y,
-                                Stroke::new(1.0_f32, divider_color),
+                        Stroke::new(1.0_f32, divider_color),
                     );
                     if divider_response.dragged() {
                         let pointer_delta = ctx.input(|input| input.pointer.delta().y);
                         self.filter_results_height = (self.filter_results_height - pointer_delta)
                             .clamp(120.0, (available_log_height - 100.0).max(120.0));
                     }
-                    let query_empty = self.log_query().is_empty();
-                    let scope = if self.filter_exclude { QueryScope::Exclude } else { QueryScope::Include };
-                    let results = self.query_indices(scope);
+                    let query_empty = snapshot.as_ref().is_some_and(|result| result.query_empty);
+                    let results = snapshot.as_ref().map_or(&[][..], |result| {
+                        if self.filter_exclude {
+                            result.excluded.as_slice()
+                        } else if result.query_empty {
+                            &[]
+                        } else {
+                            result.rows.as_slice()
+                        }
+                    });
                     ui.allocate_ui(Vec2::new(ui.available_width(), results_height), |ui| {
                         ui.allocate_ui_with_layout(
                             Vec2::new(ui.available_width(), 30.0),
@@ -529,18 +644,21 @@ impl eframe::App for TraceXApp {
                                     self.filter_exclude = false;
                                 }
                                 if ui
-                                    .add_sized(
-                                        [94.0, 22.0],
-                                        egui::Button::new(
-                                            RichText::new("COPY FILTERED")
-                                                .monospace()
-                                                .size(9.0)
-                                                .color(theme::ACCENT),
-                                        ),
-                                    )
+                                    .add_enabled_ui(snapshot.is_some(), |ui| {
+                                        ui.add_sized(
+                                            [94.0, 22.0],
+                                            egui::Button::new(
+                                                RichText::new("COPY FILTERED")
+                                                    .monospace()
+                                                    .size(9.0)
+                                                    .color(theme::ACCENT),
+                                            ),
+                                        )
+                                    })
+                                    .inner
                                     .clicked()
                                 {
-                                    ctx.copy_text(format_log_entries(results.iter().map(|&index| &self.logs[index])));
+                                    self.copy_query_rows(ctx, results);
                                 }
                                 if ui
                                     .add_sized(
@@ -570,7 +688,9 @@ impl eframe::App for TraceXApp {
                         );
                         ui.separator();
 
-                        if query_empty {
+                        if snapshot.is_none() {
+                            ui.label(self.query_failure().unwrap_or("Searching…"));
+                        } else if query_empty {
                             ui.add_space(16.0);
                             ui.centered_and_justified(|ui| {
                                 ui.label(
@@ -583,101 +703,27 @@ impl eframe::App for TraceXApp {
                             ui.add_space(16.0);
                             ui.centered_and_justified(|ui| {
                                 ui.label(
-                                    RichText::new("No matching logs")
-                                        .size(10.0)
-                                        .color(theme::TEXT_MUTED),
+                                    RichText::new(if self.query_pending() {
+                                        "Searching…"
+                                    } else {
+                                        "No matching logs"
+                                    })
+                                    .size(10.0)
+                                    .color(theme::TEXT_MUTED),
                                 );
                             });
                         } else {
-                            let content_width = log_content_width(
-                                results.iter().map(|&index| self.logs[index].message.as_str()),
-                                ui.available_width(),
-                            );
-                            egui::ScrollArea::both()
-                                .id_salt("filter_results_scroll")
-                                .auto_shrink([false; 2])
-                                .show(ui, |ui| {
-                                    ui.set_min_width(content_width);
-                                    for &index in &results {
-                                        let entry = &self.logs[index];
-                                        let (id, timestamp, level, message) = (&entry.id, &entry.timestamp, &entry.level, &entry.message);
-                                        let selected = self.selected.contains(id);
-                                        let (rect, response) = ui.allocate_exact_size(
-                                            Vec2::new(ui.available_width(), 25.0),
-                                            egui::Sense::click(),
-                                        );
-                                        let fill = if selected {
-                                            theme::ACCENT.linear_multiply(0.20)
-                                        } else if response.hovered() {
-                                            theme::BG_HOVER
-                                        } else {
-                                            Color32::TRANSPARENT
-                                        };
-                                        ui.painter().rect(
-                                            rect,
-                                            0.0,
-                                            fill,
-                                            if selected {
-                                                Stroke::new(
-                                                    1.0_f32,
-                                                    theme::ACCENT.linear_multiply(0.85),
-                                                )
-                                            } else {
-                                                Stroke::NONE
-                                            },
-                                        );
-                                        if selected {
-                                            ui.painter().vline(
-                                                rect.left() + 2.0,
-                                                rect.y_range().shrink(3.0),
-                                            Stroke::new(3.0_f32, theme::ACCENT),
-                                            );
-                                        }
-                                        let center_y = rect.center().y;
-                                        ui.painter().text(
-                                            egui::pos2(rect.left() + 14.0, center_y),
-                                            egui::Align2::LEFT_CENTER,
-                                            timestamp,
-                                            FontId::monospace(9.5),
-                                            theme::TEXT_MUTED,
-                                        );
-                                        ui.painter().text(
-                                            egui::pos2(rect.left() + 116.0, center_y),
-                                            egui::Align2::LEFT_CENTER,
-                                            level.label(),
-                                            FontId::monospace(9.5),
-                                            theme::log_level_color(*level),
-                                        );
-                                        let message_clip = egui::Rect::from_min_max(
-                                            egui::pos2(rect.left() + 158.0, rect.top()),
-                                            rect.right_bottom(),
-                                        );
-                                        ui.painter().with_clip_rect(message_clip).text(
-                                            egui::pos2(rect.left() + 158.0, center_y),
-                                            egui::Align2::LEFT_CENTER,
-                                            message,
-                                            FontId::monospace(10.5),
-                                            theme::TEXT,
-                                        );
-                                        let response = response.on_hover_text(
-                                            "Jump to this log in the upper pane • Right-click to copy",
-                                        );
-                                        let line = format_log_line(timestamp, *level, message);
-                                        add_copy_row_menu(
-                                            &response,
-                                            ctx,
-                                            &line,
-                                            selected_copy.as_deref(),
-                                            self.selected.len(),
-                                        );
-                                        if response.clicked() {
-                                            self.selected.clear();
-                                            self.selected.insert(*id);
-                                            self.scroll_to_log = Some(*id);
-                                            self.scroll_jump_settle_frames = 2;
-                                        }
+                            let content_width = snapshot
+                                .as_ref()
+                                .map_or(0.0, |result| {
+                                    if self.filter_exclude {
+                                        result.excluded_width
+                                    } else {
+                                        result.main_width
                                     }
-                                });
+                                })
+                                .max(ui.available_width());
+                            self.render_filter_rows(ui, ctx, results, content_width);
                         }
                     });
                 }
@@ -699,6 +745,36 @@ mod monitor_view_tests {
         let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
         app.auto_save_path = None;
         app
+    }
+
+    #[test]
+    fn secondary_results_render_only_visible_rows_from_large_snapshot() {
+        let mut app = app_without_io();
+        app.logs = (0..10_000)
+            .map(|id| LogEntry::new(id, format!("record {id}"), "12:00:00").into())
+            .collect();
+        let results: Vec<_> = (0..app.logs.len()).collect();
+        app.selected.insert(9_999);
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 300.0),
+            )),
+            ..Default::default()
+        };
+        let mut rendered = 0;
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                rendered = app.render_filter_rows(ui, ctx, &results, 800.0);
+            });
+        });
+        assert!(rendered > 0);
+        assert!(
+            rendered < 100,
+            "a 300-point viewport must not render all 10,000 results: {rendered}"
+        );
+        assert!(app.selected.contains(&9_999));
     }
 
     #[test]
@@ -734,11 +810,11 @@ mod monitor_view_tests {
     #[test]
     fn opening_monitor_preserves_shared_capture_and_selection() {
         let mut app = app_without_io();
-        app.logs.push(LogEntry::new(
+        app.logs.push(Arc::new(LogEntry::new(
             7,
             "captured before opening".to_owned(),
             "12:00:00",
-        ));
+        )));
         app.next_id = 8;
         app.selected.insert(7);
         app.selected_port = "test-device".to_owned();

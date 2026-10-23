@@ -2,7 +2,7 @@
 use super::TraceXApp;
 use crate::domain::{
     history_budget::HistoryBudget,
-    log::LogEntry,
+    log::SharedLog,
     query::{LogQuery, QueryScope},
     session_format::{SegmentReader, SegmentWriter},
 };
@@ -18,7 +18,7 @@ use std::{
 pub(super) struct SessionArchive {
     receiver: Option<mpsc::Receiver<ArchiveResult>>,
     // Shared handoff preserves moved history if spawning a worker fails.
-    save_records: Option<Arc<Mutex<Option<Vec<LogEntry>>>>>,
+    save_records: Option<Arc<Mutex<Option<Vec<SharedLog>>>>>,
     failure: Option<String>,
 }
 enum ArchiveResult {
@@ -26,14 +26,14 @@ enum ArchiveResult {
         result: Result<(), String>,
         marks_clean: bool,
     },
-    Opened(Result<Vec<LogEntry>, String>),
+    Opened(Result<Vec<SharedLog>, String>),
 }
 enum SaveKind {
     Session,
     Text(LogQuery),
 }
 
-fn export_text(path: PathBuf, records: &[LogEntry], query: &LogQuery) -> Result<(), String> {
+fn export_text(path: PathBuf, records: &[SharedLog], query: &LogQuery) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -67,7 +67,7 @@ fn export_text(path: PathBuf, records: &[LogEntry], query: &LogQuery) -> Result<
         .map_err(|cause| format!("Export final sync failed: {cause}"))
 }
 
-fn save(path: PathBuf, records: &[LogEntry]) -> Result<(), String> {
+fn save(path: PathBuf, records: &[SharedLog]) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -84,11 +84,11 @@ fn save(path: PathBuf, records: &[LogEntry]) -> Result<(), String> {
         .map_err(|cause| format!("Session final sync failed: {cause}"))
 }
 
-fn open(path: PathBuf) -> Result<Vec<LogEntry>, String> {
+fn open(path: PathBuf) -> Result<Vec<SharedLog>, String> {
     open_with_budget(path, HistoryBudget::default())
 }
 
-fn open_with_budget(path: PathBuf, mut budget: HistoryBudget) -> Result<Vec<LogEntry>, String> {
+fn open_with_budget(path: PathBuf, mut budget: HistoryBudget) -> Result<Vec<SharedLog>, String> {
     let file = File::open(path).map_err(|cause| format!("Could not open session: {cause}"))?;
     let mut reader = SegmentReader::new(file).map_err(|cause| cause.to_string())?;
     let mut records = Vec::new();
@@ -102,7 +102,7 @@ fn open_with_budget(path: PathBuf, mut budget: HistoryBudget) -> Result<Vec<LogE
         }
         previous_id = Some(entry.id);
         budget.record_entry(&entry);
-        records.push(entry);
+        records.push(Arc::new(entry));
     }
     // Read-only recovery inspection remains separate; only entirely valid files open.
     let _validated_bytes = reader.valid_prefix();
@@ -309,7 +309,7 @@ impl TraceXApp {
     }
 }
 
-fn take_records(records: Arc<Mutex<Option<Vec<LogEntry>>>>) -> Vec<LogEntry> {
+fn take_records(records: Arc<Mutex<Option<Vec<SharedLog>>>>) -> Vec<SharedLog> {
     match records.lock() {
         Ok(mut guard) => guard.take().unwrap_or_default(),
         Err(poisoned) => poisoned.into_inner().take().unwrap_or_default(),

@@ -1,7 +1,7 @@
 use super::log::{LogEntry, LogLevel};
 
 /// Severity selection shared by every query consumer. Other levels stay visible.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SeveritySelection {
     pub(crate) info: bool,
     pub(crate) warn: bool,
@@ -17,6 +17,7 @@ pub(crate) enum QueryScope {
 }
 
 /// A trimmed, Unicode-lowercased substring query against raw or parsed text.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LogQuery {
     text: String,
     severity: SeveritySelection,
@@ -55,9 +56,13 @@ impl LogQuery {
         }
     }
 
-    pub(crate) fn indices(&self, entries: &[LogEntry], scope: QueryScope) -> Vec<usize> {
+    pub(crate) fn indices<'a>(
+        &self,
+        entries: impl IntoIterator<Item = &'a LogEntry>,
+        scope: QueryScope,
+    ) -> Vec<usize> {
         entries
-            .iter()
+            .into_iter()
             .enumerate()
             .filter_map(|(index, entry)| self.matches(entry, scope).then_some(index))
             .collect()

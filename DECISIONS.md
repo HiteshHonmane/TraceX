@@ -199,6 +199,41 @@ not SQLite metadata, crash-proof live capture or a complete persistent workspace
 Unknown versions and corruption are rejected; recovery never silently rewrites files.
 CRC detects accidental corruption and is not an authentication mechanism.
 
+## Decision 006: Immutable shared records for background view queries
+
+- **Date:** 2026-10-23
+- **Status:** Accepted
+- **Owners:** TraceX engineering under delegated product authority
+
+### Context
+
+Native frames repeatedly scan history and measure widths. Moving that work to a
+worker must preserve capture ownership without cloning every log string or holding
+a history lock through a scan.
+
+### Decision
+
+Store admitted history as immutable `Arc<LogEntry>` records. Transfer bounded
+vectors of shared handles to one reusable query worker; return generation-tagged
+indices and widths. Keep one executing request, one latest pending request and one
+result. Reject stale views on query/history replacement, and let append scans
+complete without starvation. Archive save/open uses the same immutable ownership.
+
+### Alternatives Considered
+
+- Deep-cloned snapshots: duplicates large strings and work on the UI thread.
+- Shared locked mutable history: risks blocking ingestion or rendering during scans.
+- Full storage/index migration: required later, but unnecessary for this measured
+  per-frame bottleneck and too broad for this incremental boundary.
+
+### Consequences
+
+Snapshot preparation remains O(n) in shared handles. Old query generations can
+briefly retain records after Clear; the history admission budget is not a total
+memory guarantee. Queries still scan linearly off the UI thread. File format and
+log semantics stay unchanged; no dependency or new crate is required. See
+[background query contract](doc/engineering/BACKGROUND-QUERY.md).
+
 ## Decision Template
 
 Copy this section for future decisions.

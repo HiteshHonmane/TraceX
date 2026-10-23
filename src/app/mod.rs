@@ -64,6 +64,7 @@ impl TraceXApp {
     fn rebuild_history_accounting(&mut self) {
         self.history.rebuild(&self.logs);
         self.history_limit_reached = false;
+        self.query_view.invalidate();
     }
 
     fn log_query(&self) -> LogQuery {
@@ -78,7 +79,8 @@ impl TraceXApp {
     }
 
     fn query_indices(&self, scope: QueryScope) -> Vec<usize> {
-        self.log_query().indices(&self.logs, scope)
+        self.log_query()
+            .indices(self.logs.iter().map(AsRef::as_ref), scope)
     }
 }
 
@@ -86,6 +88,8 @@ mod autosave;
 mod autosave_worker;
 mod capture;
 mod log_format;
+mod query_view;
+mod query_worker;
 mod session_archive;
 mod shutdown;
 mod storage;
@@ -110,6 +114,7 @@ fn centered_row_scroll_offset(
     (row_center - viewport_height * 0.5).clamp(0.0, max_offset)
 }
 
+#[cfg(test)]
 fn log_content_width<'a>(messages: impl IntoIterator<Item = &'a str>, minimum: f32) -> f32 {
     messages
         .into_iter()
@@ -120,22 +125,30 @@ fn log_content_width<'a>(messages: impl IntoIterator<Item = &'a str>, minimum: f
 fn add_copy_row_menu(
     response: &egui::Response,
     ctx: &egui::Context,
-    line: &str,
-    selected_text: Option<&str>,
-    selected_count: usize,
+    entry: &LogEntry,
+    logs: &[SharedLog],
+    selected: &HashSet<usize>,
 ) {
     response.context_menu(|ui| {
         if ui.button("Copy row").clicked() {
-            ctx.copy_text(line.to_owned());
+            ctx.copy_text(format_log_line(
+                &entry.timestamp,
+                entry.level,
+                &entry.message,
+            ));
             ui.close_menu();
         }
-        if let Some(selected_text) = selected_text {
+        if selected.len() > 1 {
             ui.separator();
             if ui
-                .button(format!("Copy all selected rows ({selected_count})"))
+                .button(format!("Copy all selected rows ({})", selected.len()))
                 .clicked()
             {
-                ctx.copy_text(selected_text.to_owned());
+                ctx.copy_text(format_log_entries(
+                    logs.iter()
+                        .filter(|entry| selected.contains(&entry.id))
+                        .map(AsRef::as_ref),
+                ));
                 ui.close_menu();
             }
         }
@@ -269,7 +282,8 @@ struct TraceXApp {
     last_connected_port: Option<String>,
 
     // Logs
-    logs: Vec<LogEntry>,
+    logs: Vec<SharedLog>,
+    query_view: query_view::QueryView,
     next_id: usize,
     history: HistoryBudget,
     history_dirty: bool,
@@ -366,6 +380,7 @@ impl TraceXApp {
             last_connected_port: None,
 
             logs: Vec::new(),
+            query_view: query_view::QueryView::default(),
             next_id: 0,
             history: HistoryBudget::default(),
             history_dirty: false,
@@ -509,7 +524,7 @@ impl TraceXApp {
         ));
 
         self.history.record_entry(&entry);
-        self.logs.push(entry);
+        self.logs.push(Arc::new(entry));
         self.history_dirty = true;
     }
 
@@ -758,7 +773,7 @@ impl TraceXApp {
     fn filtered(&self) -> Vec<&LogEntry> {
         self.query_indices(QueryScope::Main)
             .into_iter()
-            .map(|index| &self.logs[index])
+            .map(|index| self.logs[index].as_ref())
             .collect()
     }
 
@@ -770,13 +785,18 @@ impl TraceXApp {
         let text = if self.selected.is_empty() {
             self.export_text()
         } else {
-            format_log_entries(self.logs.iter().filter(|e| self.selected.contains(&e.id)))
+            format_log_entries(
+                self.logs
+                    .iter()
+                    .filter(|e| self.selected.contains(&e.id))
+                    .map(AsRef::as_ref),
+            )
         };
         ctx.copy_text(text);
     }
 
     fn copy_all(&self, ctx: &egui::Context) {
-        ctx.copy_text(format_log_entries(&self.logs));
+        ctx.copy_text(format_log_entries(self.logs.iter().map(AsRef::as_ref)));
     }
 
     fn clear(&mut self) {
@@ -786,6 +806,7 @@ impl TraceXApp {
             return;
         }
         self.logs.clear();
+        self.query_view.invalidate();
         self.history_dirty = false;
         self.selected.clear();
         self.history.reset();

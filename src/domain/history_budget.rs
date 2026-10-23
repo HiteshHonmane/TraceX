@@ -1,5 +1,5 @@
 //! Conservative accounting for retained records, not a resident-memory estimate.
-use super::log::LogEntry;
+use super::log::{LogEntry, SharedLog};
 
 /// Interim safety limits. Reaching either limit stops capture without eviction.
 #[derive(Clone, Debug)]
@@ -27,8 +27,9 @@ impl HistoryBudget {
     }
 
     fn entry_overhead() -> usize {
-        // Cover Vec's initial minimum allocation (four entries) and later
-        // geometric capacity growth, without depending on its exact capacity.
+        // Conservatively cover the shared record allocation, Arc counters and
+        // handle-vector growth. Keep the established allowance rather than
+        // reducing the safety budget during the immutable-history migration.
         4 * std::mem::size_of::<LogEntry>()
     }
 
@@ -74,7 +75,7 @@ impl HistoryBudget {
         self.bytes = 0;
     }
 
-    pub(crate) fn rebuild(&mut self, entries: &[LogEntry]) {
+    pub(crate) fn rebuild(&mut self, entries: &[SharedLog]) {
         self.reset();
         for entry in entries {
             self.record_entry(entry);
@@ -125,8 +126,8 @@ mod tests {
     #[test]
     fn rebuild_matches_incremental_accounting_and_overflow_is_refused() {
         let entries = vec![
-            LogEntry::new(0, "a".into(), "t"),
-            LogEntry::new(1, "b".into(), "t"),
+            std::sync::Arc::new(LogEntry::new(0, "a".into(), "t")),
+            std::sync::Arc::new(LogEntry::new(1, "b".into(), "t")),
         ];
         let mut budget = HistoryBudget::new(2, 10_000);
         budget.rebuild(&entries);

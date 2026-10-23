@@ -11,9 +11,10 @@ Tests inject smaller limits; production defaults remain centralized in the type.
 Admission checks happen before a record is removed from the capture inbox. The
 preflight reserves raw string capacity, up to the raw length for each parsed
 message and tag, 64 bytes for the current timestamp, and four times the size of
-`LogEntry` for vector allocation. Committed accounting uses actual owned string
-capacities and the same vector allowance. Four entries cover the vector's initial
-minimum allocation as well as later geometric growth. Arithmetic cannot wrap.
+`LogEntry` for record/shared-ownership and vector allocation. Committed accounting
+uses actual owned string capacities and the same conservative allowance. History
+stores immutable shared records; the allowance covers the record object, Arc
+metadata and shared-handle vector growth. Arithmetic cannot wrap.
 
 On refusal, capture stops, automatic reconnect is disabled, and the triggering
 record remains owned by the bounded inbox. Existing history is unchanged. The
@@ -24,7 +25,10 @@ after the stop may be missing; no claim of UART flow-control losslessness is mad
 
 This is an accounting bound for retained history, not a total process RSS bound.
 The capture worker, autosave queues, parsing temporaries, query/selection vectors,
-renderer and allocator have separate overheads. Opening a saved session requires
+renderer and allocator have separate overheads. Background queries can temporarily
+retain older immutable records after Clear while their bounded executing/latest
+pending requests are cancelled; see [query ownership](BACKGROUND-QUERY.md).
+Opening a saved session requires
 an empty workspace after deliberately saving/exporting and clearing existing
 history. The candidate session is subject to the same history budget and is
 installed only after the entire file validates.

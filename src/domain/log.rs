@@ -36,6 +36,9 @@ pub(crate) struct LogEntry {
     pub(crate) raw: String,
 }
 
+/// Immutable history shared with background query and archive operations.
+pub(crate) type SharedLog = std::sync::Arc<LogEntry>;
+
 impl LogEntry {
     /// Parses a raw device line using a timestamp supplied by the application.
     ///

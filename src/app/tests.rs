@@ -350,7 +350,7 @@ fn export_and_main_view_share_trimmed_raw_matching_and_severity() {
     let mut severity_hidden = raw_match.clone();
     severity_hidden.id = 22;
     severity_hidden.level = LogLevel::Warn;
-    app.logs = vec![raw_match, severity_hidden];
+    app.logs = vec![Arc::new(raw_match), Arc::new(severity_hidden)];
     app.search = "  NeEdLe \t".into();
     app.show_warn = false;
     app.filter_exclude = true;

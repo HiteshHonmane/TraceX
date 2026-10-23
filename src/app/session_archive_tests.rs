@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::log::LogLevel;
+use crate::domain::log::{LogEntry, LogLevel, SharedLog};
 use std::time::{Duration, Instant};
 
 fn directory() -> PathBuf {
@@ -11,15 +11,15 @@ fn directory() -> PathBuf {
     std::fs::create_dir_all(&directory).unwrap();
     directory
 }
-fn records() -> Vec<LogEntry> {
-    vec![LogEntry {
+fn records() -> Vec<SharedLog> {
+    vec![Arc::new(LogEntry {
         id: 19,
         timestamp: "original time".into(),
         level: LogLevel::Error,
         tag: None,
         message: "custom message".into(),
         raw: "raw 🦀".into(),
-    }]
+    })]
 }
 fn app() -> TraceXApp {
     TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())))
@@ -44,11 +44,15 @@ fn save_and_open_roundtrip_restore_original_records_and_next_id() {
     app.history_dirty = true;
     app.rebuild_history_accounting();
     let original = app.logs.as_ptr();
+    let shared_record = Arc::clone(&app.logs[0]);
+    let raw_allocation = shared_record.raw.as_ptr();
     app.save_session_to(path.clone());
     assert!(app.session_archive_busy());
     assert!(app.logs.is_empty());
     complete(&mut app);
     assert_eq!(app.logs.as_ptr(), original);
+    assert!(Arc::ptr_eq(&app.logs[0], &shared_record));
+    assert_eq!(app.logs[0].raw.as_ptr(), raw_allocation);
     assert!(app.session_archive_shutdown_failure().is_none());
     assert!(!app.history_dirty);
     app.logs.clear();
@@ -69,9 +73,11 @@ fn existing_target_is_never_overwritten_and_original_history_returns() {
     app.logs = records();
     app.history_dirty = true;
     let pointer = app.logs.as_ptr();
+    let shared_record = Arc::clone(&app.logs[0]);
     app.save_session_to(path.clone());
     complete(&mut app);
     assert_eq!(app.logs.as_ptr(), pointer);
+    assert!(Arc::ptr_eq(&app.logs[0], &shared_record));
     assert!(app.session_archive_shutdown_failure().is_some());
     assert!(app.history_dirty);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep me");
@@ -176,7 +182,10 @@ fn asynchronous_text_export_uses_shared_query_and_returns_original_allocation() 
             message: "needle hidden".into(),
             raw: "needle".into(),
         },
-    ];
+    ]
+    .into_iter()
+    .map(Arc::new)
+    .collect();
     app.search = "  NeEdLe \n".into();
     app.history_dirty = true;
     app.show_warn = false;

@@ -1,4 +1,5 @@
 //! Deterministic domain microbenchmark; run with `cargo run --release --example performance_baseline`.
+#[allow(dead_code)] // This isolated benchmark uses only the owned-record API.
 #[path = "../src/domain/log.rs"]
 mod log;
 #[path = "../src/domain/query.rs"]

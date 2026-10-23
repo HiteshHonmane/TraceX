@@ -15,6 +15,7 @@ and is not a production-qualified capture or recovery tool.
 - Automatic reconnect after device removal and return
 - Timestamped auto-save with configurable rotation
 - Text and severity filtering
+- Background query snapshots and virtualized search results
 - Multi-row selection and copy
 - Command sending and recent command history
 - Virtualized two-axis log scrolling
@@ -50,7 +51,7 @@ history reaches its safety budget; pending received data is preserved. Export
 retained history and deliberately clear it to make space for pending records.
 
 The application is still a development preview. Monitor tabs share one device
-capture; independent device sessions, indexed background search and automatic
+capture; independent device sessions, indexed/paged search and automatic
 crash recovery remain unfinished. Memory accounting limits are safety defaults,
 not measured throughput or whole-process memory guarantees.
 
@@ -82,6 +83,7 @@ The Windows executable will be in `target/release/tracex.exe`.
 - [UART framing and disconnect behavior](doc/UART-FRAMING.md)
 - [Bounded capture and overload behavior](doc/CAPTURE-BEHAVIOR.md)
 - [Query behavior](doc/QUERY-BEHAVIOR.md)
+- [Background query ownership and measurements](doc/engineering/BACKGROUND-QUERY.md)
 - [Development preview packaging](doc/DEVELOPMENT-PREVIEW.md)
 - [Asynchronous autosave behavior](doc/engineering/AUTOSAVE-WORKER.md)
 - [History retention limits](doc/engineering/HISTORY-RETENTION.md)

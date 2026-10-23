@@ -1,4 +1,5 @@
 use crate::domain::log::{LogEntry, LogLevel};
+#[cfg(test)]
 use std::collections::HashSet;
 
 pub(super) fn format_log_line(timestamp: &str, level: LogLevel, message: &str) -> String {
@@ -24,6 +25,7 @@ pub(super) fn format_log_entries<'a>(entries: impl IntoIterator<Item = &'a LogEn
     }))
 }
 
+#[cfg(test)]
 pub(super) fn selected_log_text(logs: &[LogEntry], selected: &HashSet<usize>) -> Option<String> {
     (selected.len() > 1)
         .then(|| format_log_entries(logs.iter().filter(|entry| selected.contains(&entry.id))))

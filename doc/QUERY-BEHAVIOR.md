@@ -10,7 +10,7 @@ The secondary filter-results pane uses the same severity and text contract. INCL
 
 Explicit selected-row copy continues to copy selected entries in capture order, including selected entries hidden by the current query. Copy all logs continues to mean all captured entries. These intentional operations are independent of the current query.
 
-Query logic lives in [the domain query module](../src/domain/query.rs); application methods supply severity state and format copy text. [The UI](../src/app/ui.rs) renders index snapshots into the existing log storage instead of cloning every matching timestamp and message each frame. Matching still scans retained entries and lowercases examined strings; indexed background search remains unfinished. [History admission](engineering/HISTORY-RETENTION.md) limits retained records without silently evicting them.
+Query logic lives in [the domain query module](../src/domain/query.rs). A bounded background worker computes match indices and widths over immutable shared records; unchanged frames reuse results. Search/severity changes invalidate old results, while live appends retain a valid prefix until the worker catches up. Both panes virtualize visible rows. See [background query ownership and measurements](engineering/BACKGROUND-QUERY.md). Indexed and disk-paged search remain unfinished. [History admission](engineering/HISTORY-RETENTION.md) limits retained records without silently evicting them.
 
 Text export runs on a worker while disconnected, streams the same main-view query to a new file and synchronizes it before reporting success. It retains and returns ownership of the original history on success or failure. Existing files are not overwritten. Pending capture consumption waits until the export finishes.
 

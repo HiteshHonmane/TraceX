@@ -32,6 +32,7 @@ All contributors should read:
 - [Bounded history retention](HISTORY-RETENTION.md)
 - [Session segment format and archive operations](SESSION-FORMAT.md)
 - [Close lifecycle](CLOSE-LIFECYCLE.md)
+- [Background query snapshots](BACKGROUND-QUERY.md)
 
 If a chapter conflicts with `doc/02-System-Architecture.md`, the architecture
 document wins and the handbook must be corrected in the same change.
