@@ -3,8 +3,11 @@ use super::super::*;
 impl TraceXApp {
     pub(super) fn render_command_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("command_rail").exact_height(116.0)
-            .frame(egui::Frame::none().fill(theme::BG_COMMAND).inner_margin(egui::Margin::symmetric(16.0, 10.0)))
+            .frame(egui::Frame::none().fill(theme::BG_PANEL).inner_margin(egui::Margin::symmetric(16.0, 10.0)))
             .show(ctx, |ui| {
+                let rail = ui.max_rect().expand2(Vec2::new(16.0, 10.0));
+                ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(rail.left(), rail.top() + 44.0), rail.right_bottom()), 0.0, theme::BG_COMMAND);
+                ui.painter().hline(rail.x_range(), rail.top(), Stroke::new(1.0_f32, theme::BORDER));
                 ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 32.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.label(RichText::new("HISTORY:").size(10.0).color(theme::TEXT_MUTED));
                     egui::ScrollArea::horizontal().id_salt("command_history_scroll").auto_shrink([false, true]).show(ui, |ui| {
@@ -35,23 +38,9 @@ impl TraceXApp {
         let mut rects = [egui::Rect::NOTHING; 3];
         ui.horizontal(|ui| {
             let editor_width = (ui.available_width() - 190.0).max(80.0);
-            let response = ui.add_sized(
-                [editor_width, 38.0],
-                egui::TextEdit::singleline(&mut self.command_input)
-                    .font(FontId::monospace(12.0))
-                    .background_color(Color32::from_gray(10))
-                    .margin(egui::Margin::symmetric(28.0, 10.0))
-                    .hint_text("Enter command..."),
-            );
-            rects[0] = response.rect;
-            ui.painter().text(
-                egui::pos2(response.rect.left() + 12.0, response.rect.center().y),
-                egui::Align2::CENTER_CENTER,
-                ">",
-                FontId::monospace(14.0),
-                theme::TEXT_MUTED,
-            );
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let editor = command_editor(ui, &mut self.command_input, editor_width);
+            rects[0] = editor.frame;
+            if editor.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.submit_editor_command();
             }
             let ending = ui.add_sized(
@@ -104,6 +93,61 @@ impl TraceXApp {
     }
 }
 
+struct CommandEditor {
+    response: egui::Response,
+    frame: egui::Rect,
+    #[cfg(test)]
+    prompt: egui::Rect,
+}
+
+fn command_editor(ui: &mut egui::Ui, text: &mut String, width: f32) -> CommandEditor {
+    let mut prompt = egui::Rect::NOTHING;
+    let editor = egui::Frame::none()
+        .fill(Color32::from_gray(10))
+        .stroke(Stroke::new(1.0_f32, theme::BORDER))
+        .rounding(4.0)
+        .inner_margin(egui::Margin::symmetric(10.0, 9.0))
+        .show(ui, |ui| {
+            ui.set_width(width - 20.0);
+            ui.horizontal(|ui| {
+                (prompt, _) = ui.allocate_exact_size(Vec2::new(14.0, 20.0), egui::Sense::hover());
+                ui.painter().text(
+                    prompt.center(),
+                    egui::Align2::CENTER_CENTER,
+                    ">",
+                    FontId::monospace(14.0),
+                    theme::TEXT_MUTED,
+                );
+                ui.add_sized(
+                    [width - 42.0, 20.0],
+                    egui::TextEdit::singleline(text)
+                        .font(theme::command_font(14.0))
+                        .margin(egui::Margin::ZERO)
+                        .hint_text(
+                            RichText::new("Enter command...")
+                                .font(theme::command_font(14.0))
+                                .color(Color32::from_gray(102)),
+                        )
+                        .frame(false),
+                )
+            })
+            .inner
+        });
+    if editor.inner.has_focus() {
+        ui.painter().rect_stroke(
+            editor.response.rect,
+            4.0,
+            Stroke::new(1.0_f32, theme::TEXT_DIM),
+        );
+    }
+    CommandEditor {
+        response: editor.inner,
+        frame: editor.response.rect,
+        #[cfg(test)]
+        prompt,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +174,24 @@ mod tests {
         );
         assert_eq!(app.logs.len(), 1);
         assert!(app.selected.contains(&7));
+    }
+
+    #[test]
+    fn prompt_and_hint_have_separate_non_overlapping_layout_regions() {
+        for text in ["", "AT+STATUS"] {
+            let mut text = text.to_owned();
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let editor = command_editor(ui, &mut text, 300.0);
+                    assert!(editor.prompt.right() + 4.0 <= editor.response.rect.left());
+                    assert!(editor.frame.contains_rect(editor.prompt));
+                    assert!(editor.frame.contains_rect(editor.response.rect));
+                });
+            });
+            assert!(!output.shapes.is_empty());
+        }
     }
 
     #[test]

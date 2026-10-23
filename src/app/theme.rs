@@ -1,5 +1,6 @@
 use crate::domain::log::LogLevel;
 use eframe::egui::{self, Color32, FontId, Stroke, TextStyle, Vec2};
+use std::sync::Arc;
 
 pub const BG_DARK: Color32 = Color32::from_gray(18);
 pub const BG_PANEL: Color32 = Color32::from_gray(20);
@@ -16,14 +17,77 @@ pub const ACCENT: Color32 = Color32::from_gray(192);
 pub const SUCCESS: Color32 = Color32::from_rgb(83, 180, 126);
 pub const WARNING: Color32 = Color32::from_rgb(218, 174, 72);
 pub const ERROR: Color32 = Color32::from_rgb(218, 85, 99);
-pub const INFO: Color32 = SUCCESS;
+pub const INFO: Color32 = Color32::from_rgb(56, 161, 105);
 pub const DEBUG: Color32 = Color32::from_rgb(129, 161, 183);
 pub const VERBOSE: Color32 = Color32::from_rgb(127, 140, 141);
 
 pub const BORDER: Color32 = Color32::from_gray(48);
+pub const INFO_PILL: Color32 = Color32::from_rgb(25, 49, 36);
+pub const WARN_PILL: Color32 = Color32::from_gray(35);
+pub const ERROR_PILL: Color32 = Color32::from_rgb(48, 26, 29);
 
-pub fn tint(color: Color32, alpha: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+pub fn medium_font(size: f32) -> FontId {
+    FontId::new(size, egui::FontFamily::Name("Inter Medium".into()))
+}
+
+pub fn bold_font(size: f32) -> FontId {
+    FontId::new(size, egui::FontFamily::Name("Inter Bold".into()))
+}
+
+pub fn command_font(size: f32) -> FontId {
+    FontId::new(size, egui::FontFamily::Name("Command Mono".into()))
+}
+
+fn font_definitions() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    for (name, bytes) in [
+        (
+            "Inter Regular",
+            include_bytes!("../../assets/fonts/inter/Inter-Regular.ttf").as_slice(),
+        ),
+        (
+            "Inter Medium",
+            include_bytes!("../../assets/fonts/inter/Inter-Medium.ttf").as_slice(),
+        ),
+        (
+            "Inter Bold",
+            include_bytes!("../../assets/fonts/inter/Inter-Bold.ttf").as_slice(),
+        ),
+        (
+            "Liberation Mono",
+            include_bytes!("../../assets/fonts/liberation/LiberationMono-Regular.ttf").as_slice(),
+        ),
+    ] {
+        fonts.font_data.insert(
+            name.to_owned(),
+            Arc::new(egui::FontData::from_static(bytes)),
+        );
+    }
+    let proportional = fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default();
+    proportional.insert(0, "Inter Regular".to_owned());
+    let proportional = proportional.clone();
+    for name in ["Inter Medium", "Inter Bold"] {
+        let mut family = vec![name.to_owned()];
+        family.extend(proportional.clone());
+        fonts
+            .families
+            .insert(egui::FontFamily::Name(name.into()), family);
+    }
+    let mut command = vec!["Liberation Mono".to_owned()];
+    command.extend(
+        fonts
+            .families
+            .get(&egui::FontFamily::Monospace)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("Command Mono".into()), command);
+    fonts
 }
 
 pub fn log_level_color(level: LogLevel) -> Color32 {
@@ -38,6 +102,7 @@ pub fn log_level_color(level: LogLevel) -> Color32 {
 }
 
 pub fn setup(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions());
     let mut v = egui::Visuals::dark();
     v.panel_fill = BG_DARK;
     v.window_fill = BG_PANEL;
@@ -90,6 +155,52 @@ pub fn setup(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_fonts_register_real_weights_and_keep_default_fallbacks() {
+        let definitions = font_definitions();
+        assert_eq!(
+            definitions.families[&egui::FontFamily::Proportional][0],
+            "Inter Regular"
+        );
+        for (family, primary) in [
+            (medium_font(12.0).family, "Inter Medium"),
+            (bold_font(14.0).family, "Inter Bold"),
+            (command_font(14.0).family, "Liberation Mono"),
+        ] {
+            assert_eq!(definitions.families[&family][0], primary);
+            assert!(definitions.font_data.contains_key(primary));
+            assert!(
+                definitions.families[&family].len() > 1,
+                "bundled fallback chain must remain"
+            );
+        }
+        assert_eq!(
+            definitions.families[&egui::FontFamily::Monospace][0],
+            "Hack",
+            "log font is outside this command/UI typography change"
+        );
+        let ctx = egui::Context::default();
+        setup(&ctx);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            ctx.fonts(|fonts| {
+                for font in [
+                    FontId::proportional(14.0),
+                    medium_font(12.0),
+                    bold_font(14.0),
+                    command_font(14.0),
+                ] {
+                    assert!(fonts.has_glyphs(&font, "TraceX AT+STATUS café 23°C μs"));
+                }
+                assert!(
+                    (fonts.glyph_width(&command_font(14.0), 'W')
+                        - fonts.glyph_width(&command_font(14.0), 'i'))
+                    .abs()
+                        < 0.01
+                );
+            });
+        });
+    }
 
     #[test]
     fn ordinary_controls_use_theme_in_all_interaction_states() {

@@ -77,6 +77,20 @@ impl TraceXApp {
             ui.label("Select a port and baud rate, then connect. Disconnect before saving or reopening a session.");
             ui.label("Save Session preserves all retained records. Text export follows the current search and severity filters.");
             ui.label("Monitor tabs currently share one device capture.");
+            ui.separator();
+            ui.menu_button("Third-party font licenses", |ui| {
+                ui.set_width(480.0);
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    for (name, license) in [
+                        ("Inter 4.1", include_str!("../../../assets/fonts/inter/LICENSE.txt")),
+                        ("Liberation Fonts 2.1.5", include_str!("../../../assets/fonts/liberation/LICENSE")),
+                    ] {
+                        ui.heading(name);
+                        ui.add(egui::Label::new(license).wrap());
+                        ui.separator();
+                    }
+                });
+            });
         });
     }
 }

@@ -161,14 +161,24 @@ pub(super) fn paint(ui: &Ui, rect: Rect, icon: Icon, color: Color32) {
 pub(super) fn button(ui: &mut Ui, icon: Icon, label: &str, size: Vec2, selected: bool) -> Response {
     let response = ui.add_sized(
         size,
-        egui::Button::new("").frame(selected).selected(selected),
+        egui::Button::new("")
+            .frame(false)
+            .fill(if selected {
+                super::theme::BG_INPUT
+            } else {
+                Color32::TRANSPARENT
+            })
+            .stroke(Stroke::NONE)
+            .rounding(4.0),
     );
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     let color = if !ui.is_enabled() {
         super::theme::TEXT_MUTED.gamma_multiply(0.5)
-    } else if response.hovered() || selected {
+    } else if selected {
+        super::theme::SUCCESS
+    } else if response.hovered() {
         super::theme::TEXT
     } else {
         super::theme::TEXT_DIM
@@ -217,8 +227,43 @@ pub(super) fn navigation(ui: &mut Ui, icon: Icon, label: &str) -> Response {
         center + egui::vec2(22.0, 0.0),
         egui::Align2::LEFT_CENTER,
         label,
-        egui::FontId::proportional(13.0),
+        super::theme::medium_font(14.0),
         color,
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_follow_has_subtle_rounded_background() {
+        let ctx = egui::Context::default();
+        super::super::theme::setup(&ctx);
+        let mut rect = Rect::NOTHING;
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                rect = button(
+                    ui,
+                    Icon::Follow,
+                    "Follow incoming logs",
+                    Vec2::splat(28.0),
+                    true,
+                )
+                .rect;
+            });
+        });
+        let shape = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(shape) if shape.rect == rect => Some(shape),
+                _ => None,
+            })
+            .expect("follow background must render");
+        assert_eq!(shape.fill, super::super::theme::BG_INPUT);
+        assert_eq!(shape.rounding.nw, 4.0);
+        assert_eq!(shape.stroke, Stroke::NONE);
+    }
 }

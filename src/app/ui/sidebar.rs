@@ -23,8 +23,14 @@ impl TraceXApp {
 
     fn render_connection_configuration(&mut self, ui: &mut egui::Ui) {
         ui.add_space(18.0);
-        ui.label(RichText::new("TraceX").size(30.0).color(theme::TEXT));
-        ui.add_space(32.0);
+        ui.label(
+            RichText::new("TraceX")
+                .font(theme::medium_font(31.0))
+                .line_height(Some(28.0))
+                .extra_letter_spacing(0.45)
+                .color(Color32::WHITE),
+        );
+        ui.add_space(38.0);
         let ready = self.connected || !self.selected_port.is_empty();
         let label = if self.connected {
             "Disconnect Device"
@@ -65,7 +71,12 @@ impl TraceXApp {
     }
 
     fn render_port_configuration(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Port").size(12.0).color(theme::TEXT_DIM));
+        ui.label(
+            RichText::new("Port")
+                .font(theme::medium_font(12.0))
+                .line_height(Some(16.0))
+                .color(theme::TEXT),
+        );
         let ports = self.ports.lock().map(|p| p.clone()).unwrap_or_default();
         let selected_display = ports
             .iter()
@@ -82,7 +93,12 @@ impl TraceXApp {
             ui.spacing_mut().interact_size.y = 34.0;
             egui::ComboBox::from_id_salt("port_combo")
                 .width(ui.available_width())
-                .selected_text(RichText::new(&selected_display).size(12.0))
+                .selected_text(
+                    RichText::new(&selected_display)
+                        .size(14.0)
+                        .line_height(Some(20.0))
+                        .color(theme::TEXT),
+                )
                 .show_ui(ui, |ui| {
                     if ports.is_empty() {
                         ui.label("No serial ports detected");
@@ -100,12 +116,22 @@ impl TraceXApp {
                 .on_hover_text(&selected_display);
         });
         ui.add_space(14.0);
-        ui.label(RichText::new("Baud Rate").size(12.0).color(theme::TEXT_DIM));
+        ui.label(
+            RichText::new("Baud Rate")
+                .font(theme::medium_font(12.0))
+                .line_height(Some(16.0))
+                .color(theme::TEXT),
+        );
         ui.add_enabled_ui(!self.connected, |ui| {
             ui.spacing_mut().interact_size.y = 34.0;
             egui::ComboBox::from_id_salt("baud_combo")
                 .width(ui.available_width())
-                .selected_text(RichText::new(self.baud_rate.to_string()).size(12.0))
+                .selected_text(
+                    RichText::new(self.baud_rate.to_string())
+                        .size(14.0)
+                        .line_height(Some(20.0))
+                        .color(theme::TEXT),
+                )
                 .show_ui(ui, |ui| {
                     for rate in BAUD_RATES {
                         if ui
@@ -124,7 +150,7 @@ impl TraceXApp {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new("Auto-Save Logs")
-                    .size(13.0)
+                    .size(14.0)
                     .color(theme::TEXT_DIM),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -138,12 +164,12 @@ impl TraceXApp {
             .into_iter()
             .flatten()
         {
-            ui.add(egui::Label::new(RichText::new(error).size(12.0).color(theme::ERROR)).wrap());
+            ui.add(egui::Label::new(RichText::new(error).size(13.0).color(theme::ERROR)).wrap());
         }
         if self.session_archive_busy() {
             ui.label(
                 RichText::new("Session file operation in progress…")
-                    .size(12.0)
+                    .size(13.0)
                     .color(theme::TEXT_DIM),
             );
         }

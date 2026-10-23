@@ -8,6 +8,8 @@ impl TraceXApp {
         ctx: &egui::Context,
     ) -> [egui::Rect; 8] {
         let mut controls = [egui::Rect::NOTHING; 8];
+        let previous_spacing = ui.spacing().item_spacing.y;
+        ui.spacing_mut().item_spacing.y = 0.0;
         egui::Frame::none()
             .fill(theme::BG_PANEL)
             .inner_margin(egui::Margin::symmetric(16.0, 0.0))
@@ -17,29 +19,11 @@ impl TraceXApp {
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         let search_width = (ui.available_width() - 370.0).clamp(140.0, 256.0);
-                        controls[0] = egui::Frame::none()
-                            .fill(theme::BG_INPUT)
-                            .stroke(Stroke::new(1.0_f32, theme::BORDER))
-                            .rounding(4.0)
-                            .inner_margin(egui::Margin::symmetric(8.0, 2.0))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    let (rect, _) = ui.allocate_exact_size(
-                                        Vec2::splat(14.0),
-                                        egui::Sense::hover(),
-                                    );
-                                    icons::paint(ui, rect, Icon::Search, theme::TEXT_MUTED);
-                                    ui.add_sized(
-                                        [search_width - 38.0, 26.0],
-                                        egui::TextEdit::singleline(&mut self.search)
-                                            .font(FontId::proportional(12.0))
-                                            .hint_text("Search")
-                                            .frame(false),
-                                    );
-                                });
-                            })
-                            .response
-                            .rect;
+                        let (search_slot, _) = ui.allocate_exact_size(
+                            Vec2::new(search_width, 34.0),
+                            egui::Sense::hover(),
+                        );
+                        controls[0] = render_search(ui, &mut self.search, search_slot);
                         ui.add_space(6.0);
                         ui.separator();
                         ui.add_space(6.0);
@@ -141,8 +125,40 @@ impl TraceXApp {
             ui.cursor().top(),
             Stroke::new(1.0_f32, theme::BORDER),
         );
+        ui.spacing_mut().item_spacing.y = previous_spacing;
         controls
     }
+}
+
+fn render_search(ui: &mut egui::Ui, search: &mut String, slot: egui::Rect) -> egui::Rect {
+    ui.painter().rect(
+        slot,
+        4.0,
+        theme::BG_INPUT,
+        Stroke::new(1.0_f32, theme::BORDER),
+    );
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(slot.left() + 16.0, slot.center().y),
+        Vec2::splat(14.0),
+    );
+    icons::paint(ui, icon_rect, Icon::Search, theme::TEXT_MUTED);
+    let text_rect = egui::Rect::from_min_max(
+        egui::pos2(slot.left() + 32.0, slot.top() + 7.0),
+        egui::pos2(slot.right() - 8.0, slot.bottom() - 7.0),
+    );
+    let response = ui.put(
+        text_rect,
+        egui::TextEdit::singleline(search)
+            .font(FontId::proportional(14.0))
+            .margin(egui::Margin::ZERO)
+            .hint_text("Search")
+            .frame(false),
+    );
+    if response.has_focus() {
+        ui.painter()
+            .rect_stroke(slot, 4.0, Stroke::new(1.0_f32, theme::TEXT_DIM));
+    }
+    slot
 }
 
 // Operational state must remain visible even when the compact toolbar hides counts.
@@ -177,18 +193,29 @@ fn severity_chip(
     color: Color32,
     warning: bool,
 ) -> egui::Rect {
+    let selected_fill = match label {
+        "INFO" => theme::INFO_PILL,
+        "WARN" => theme::WARN_PILL,
+        _ => theme::ERROR_PILL,
+    };
+    let selected_border = if warning {
+        theme::BORDER
+    } else {
+        selected_fill.gamma_multiply(1.4)
+    };
     let response = ui.add_sized(
-        [if label == "ERROR" { 78.0 } else { 70.0 }, 24.0],
+        [if label == "ERROR" { 78.0 } else { 70.0 }, 26.0],
         egui::Button::new("")
+            .small()
             .fill(if *selected {
-                theme::tint(color, 30)
+                selected_fill
             } else {
                 theme::BG_INPUT
             })
             .stroke(Stroke::new(
                 1.0_f32,
                 if *selected {
-                    theme::tint(color, 65)
+                    selected_border
                 } else {
                     theme::BORDER
                 },
@@ -229,8 +256,12 @@ fn severity_chip(
         center + egui::vec2(10.0, 0.0),
         egui::Align2::LEFT_CENTER,
         label,
-        FontId::proportional(10.0),
-        color,
+        theme::medium_font(12.0),
+        if warning && *selected {
+            theme::TEXT_DIM
+        } else {
+            color
+        },
     );
     let rect = response.rect;
     response.on_hover_text(format!(
@@ -244,6 +275,64 @@ fn severity_chip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_severity_pills_use_opaque_dark_surfaces() {
+        for (label, color, warning, expected) in [
+            ("INFO", theme::INFO, false, theme::INFO_PILL),
+            ("WARN", theme::WARNING, true, theme::WARN_PILL),
+            ("ERROR", theme::ERROR, false, theme::ERROR_PILL),
+        ] {
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            let mut rect = egui::Rect::NOTHING;
+            let output = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    rect = severity_chip(ui, label, &mut true, color, warning);
+                });
+            });
+            let surface = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(shape) if shape.rect == rect => Some(shape.fill),
+                    _ => None,
+                })
+                .expect("severity control background must render");
+            assert_eq!(surface, expected);
+            assert_eq!(
+                surface.a(),
+                255,
+                "pill fill must not depend on alpha blending"
+            );
+        }
+    }
+
+    #[test]
+    fn toolbar_stays_at_approved_52_point_height_without_status() {
+        let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1024.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let top = ui.cursor().top();
+                    app.render_toolbar(ui, ctx);
+                    assert!(
+                        (ui.cursor().top() - top - 52.0).abs() < 0.1,
+                        "toolbar includes unexpected vertical spacing"
+                    );
+                });
+            },
+        );
+    }
 
     #[test]
     fn search_failure_and_pending_status_remain_visible_at_narrow_widths() {
@@ -312,6 +401,19 @@ mod tests {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let available = ui.available_rect_before_wrap();
                         let controls = app.render_toolbar(ui, ctx);
+                        if controls[2].is_positive() {
+                            for chip in &controls[1..4] {
+                                assert!(
+                                    (chip.height() - 26.0).abs() < 0.1,
+                                    "severity returned height must match requested 26 points"
+                                );
+                                assert!(
+                                    (chip.center().y - controls[0].center().y).abs() < 0.1,
+                                    "search outer frame and severity pills must share a centerline"
+                                );
+                            }
+                        }
+
                         let active: Vec<_> =
                             controls.into_iter().filter(|r| r.is_positive()).collect();
                         for (i, rect) in active.iter().enumerate() {

@@ -248,10 +248,12 @@ impl TraceXApp {
 
 impl eframe::App for TraceXApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !self.theme_ready {
-            theme::setup(ctx);
-            self.theme_ready = true;
-        }
+        self.update_native_ui(ctx);
+    }
+}
+
+impl TraceXApp {
+    fn update_native_ui(&mut self, ctx: &egui::Context) {
         self.intercept_window_close(ctx, Instant::now());
         self.poll();
         self.refresh_query_view();
@@ -593,6 +595,42 @@ mod monitor_view_tests {
         let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
         app.auto_save_path = None;
         app
+    }
+
+    #[test]
+    fn prepared_creation_path_renders_named_fonts_on_first_actual_update() {
+        let ctx = egui::Context::default();
+        // Use the same preparation method as eframe's CreationContext callback,
+        // then execute the complete update path used by eframe::App::update.
+        let mut app = app_without_io().prepare_native_ui(&ctx);
+        app.command_input = "unsent command".to_owned();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1200.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let first = ctx.run(input.clone(), |ctx| app.update_native_ui(ctx));
+        assert!(
+            first.shapes.iter().any(|shape| match &shape.shape {
+                egui::Shape::Text(text) => {
+                    text.galley.job.text == "TraceX"
+                        && text
+                            .galley
+                            .job
+                            .sections
+                            .iter()
+                            .any(|section| section.format.font_id == theme::medium_font(31.0))
+                }
+                _ => false,
+            }),
+            "the first update must render the named-font wordmark"
+        );
+        let _ = ctx.run(input, |ctx| app.update_native_ui(ctx));
+        assert_eq!(app.command_input, "unsent command");
+        assert!(app.logs.is_empty());
+        assert!(!app.connected);
     }
 
     #[test]

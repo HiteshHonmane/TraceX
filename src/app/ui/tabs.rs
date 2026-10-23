@@ -55,8 +55,8 @@ impl TraceXApp {
                                 egui::pos2(rect.left() + 20.0, rect.center().y),
                                 egui::Align2::LEFT_CENTER,
                                 title,
-                                FontId::proportional(13.0),
-                                if active { theme::TEXT } else { theme::TEXT_DIM },
+                                if active { theme::bold_font(14.0) } else { FontId::proportional(14.0) },
+                                if active { Color32::WHITE } else { theme::TEXT_DIM },
                             );
                             if active || response.hovered() {
                                 super::icons::paint(ui, egui::Rect::from_center_size(egui::pos2(rect.right() - 18.0, rect.center().y), Vec2::splat(12.0)), super::icons::Icon::Close, theme::TEXT_MUTED);

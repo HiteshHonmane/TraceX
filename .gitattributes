@@ -1,2 +1,5 @@
 # Upstream notices and source archives are checksum-verified verbatim assets.
 distribution/** -text -whitespace
+assets/fonts/**/*.ttf -text
+assets/fonts/inter/LICENSE.txt -text -whitespace
+assets/fonts/liberation/LICENSE -text -whitespace

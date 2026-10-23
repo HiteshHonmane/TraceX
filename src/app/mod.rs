@@ -257,7 +257,7 @@ pub fn run() -> eframe::Result<()> {
                 .with_title("TraceX"),
             ..Default::default()
         },
-        Box::new(move |_cc| Ok(Box::new(TraceXApp::new()))),
+        Box::new(move |cc| Ok(Box::new(TraceXApp::new().prepare_native_ui(&cc.egui_ctx)))),
     )
 }
 
@@ -325,7 +325,6 @@ struct TraceXApp {
     show_info: bool,
     show_warn: bool,
     show_error: bool,
-    theme_ready: bool,
 
     // Stats
     rate: f32,
@@ -337,6 +336,13 @@ struct TraceXApp {
 }
 
 impl TraceXApp {
+    // Font definitions take effect at egui's next pass. The creation callback
+    // must prepare the UI before the first update can use named font families.
+    fn prepare_native_ui(self, ctx: &egui::Context) -> Self {
+        theme::setup(ctx);
+        self
+    }
+
     fn default_log_path() -> PathBuf {
         if let Some(user_dirs) = UserDirs::new()
             && let Some(doc_dir) = user_dirs.document_dir()
@@ -421,7 +427,6 @@ impl TraceXApp {
             show_info: true,
             show_warn: true,
             show_error: true,
-            theme_ready: false,
 
             rate: 0.0,
             rate_count: 0,
