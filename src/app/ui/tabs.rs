@@ -6,11 +6,11 @@ impl TraceXApp {
             .exact_height(TOP_HEADER_HEIGHT)
             .frame(
                 egui::Frame::none()
-                    .fill(theme::BG_INPUT)
+                    .fill(Color32::from_gray(31))
                     .stroke(Stroke::new(1.0_f32, theme::BORDER)),
             )
             .show(ctx, |ui| {
-                const TAB_HEIGHT: f32 = 40.0;
+                const TAB_HEIGHT: f32 = 36.0;
                 ui.add_space(TOP_HEADER_HEIGHT - TAB_HEIGHT);
                 ui.horizontal(|ui| {
                     let tabs: Vec<_> = self
@@ -25,7 +25,7 @@ impl TraceXApp {
                         let active = self.active_tab == index;
                         ui.push_id(("monitor_tab", index), |ui| {
                             let (rect, response) = ui.allocate_exact_size(
-                                Vec2::new(150.0, TAB_HEIGHT),
+                                Vec2::new(132.0, TAB_HEIGHT),
                                 egui::Sense::click(),
                             );
                             let fill = if active {
@@ -59,15 +59,10 @@ impl TraceXApp {
                                 if active { theme::TEXT } else { theme::TEXT_DIM },
                             );
                             if active || response.hovered() {
-                                ui.painter().text(
-                                    egui::pos2(rect.right() - 18.0, rect.center().y),
-                                    egui::Align2::CENTER_CENTER,
-                                    "×",
-                                    FontId::proportional(14.0),
-                                    theme::TEXT_MUTED,
-                                );
+                                super::icons::paint(ui, egui::Rect::from_center_size(egui::pos2(rect.right() - 18.0, rect.center().y), Vec2::splat(12.0)), super::icons::Icon::Close, theme::TEXT_MUTED);
                             }
 
+                            let response = response.on_hover_text("Monitor views share the current device capture and command destination.");
                             if response.clicked() {
                                 let over_close = response
                                     .interact_pointer_pos()
@@ -97,15 +92,7 @@ impl TraceXApp {
                         }
                     }
 
-                    if ui
-                        .add_sized(
-                            [38.0, 36.0],
-                            egui::Button::new(RichText::new("+").size(18.0).color(theme::TEXT_DIM))
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
-                        )
-                        .on_hover_text("Open a new monitor")
-                        .clicked()
+                    if super::icons::button(ui, super::icons::Icon::Plus, "Open a monitor view (shared capture)", Vec2::new(36.0, 36.0), false).clicked()
                     {
                         let number = self.ui_tabs.len() + 1;
                         self.ui_tabs.push(UiTab {
@@ -117,8 +104,8 @@ impl TraceXApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(14.0);
-                        ui.label(RichText::new("◎").size(22.0).color(theme::TEXT_DIM))
-                            .on_hover_text("Profile");
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), egui::Sense::hover());
+                        super::icons::paint(ui, rect.shrink(2.0), super::icons::Icon::Profile, theme::TEXT_DIM);
                     });
                 });
             });

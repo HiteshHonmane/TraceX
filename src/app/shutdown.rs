@@ -132,7 +132,11 @@ impl super::TraceXApp {
 
     pub(super) fn advance_shutdown(&mut self, now: Instant) -> ShutdownAction {
         let mut failures = Vec::new();
-        if let Some(reason) = &self.capture_error {
+        // A historical continuity warning remains visible after recovery. Only
+        // capture that still owns unfinished work makes that warning block exit.
+        if self.capture.is_some()
+            && let Some(reason) = &self.capture_error
+        {
             failures.push(reason.clone());
         }
         if self.history_limit_reached && self.capture.is_some() {
@@ -362,5 +366,56 @@ mod tests {
             shutdown.advance(now, snapshot(true, true)),
             ShutdownAction::Close
         );
+    }
+
+    #[test]
+    fn recovered_capacity_stop_and_saved_tail_close_without_erasing_continuity_warning() {
+        use std::sync::{Arc, Mutex};
+        let mut app = super::super::TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
+        app.history = crate::domain::history_budget::HistoryBudget::new(1, usize::MAX);
+        let (feed, inbox) = super::super::capture::CaptureInbox::test_channel();
+        feed.send("first record".into()).unwrap();
+        feed.send("pending tail".into()).unwrap();
+        drop(feed);
+        app.capture = Some(inbox);
+        app.connected = true;
+        app.poll();
+        assert!(app.history_limit_reached);
+        let warning = app.capture_error.clone().unwrap();
+        let now = Instant::now();
+        app.request_shutdown(now);
+        assert_eq!(app.advance_shutdown(now), ShutdownAction::Wait);
+        assert!(
+            app.shutdown.decision().is_some(),
+            "pending tail must block close"
+        );
+        app.shutdown.keep_open();
+        app.clear();
+        app.poll();
+        assert!(app.capture.is_none());
+        assert!(app.history_dirty);
+        app.request_shutdown(now);
+        assert_eq!(app.advance_shutdown(now), ShutdownAction::FinishAutosave);
+        assert_eq!(app.advance_shutdown(now), ShutdownAction::Wait);
+        assert!(app.shutdown.unsaved_session_confirmation());
+        app.shutdown.keep_open();
+        let path = std::env::temp_dir().join(format!(
+            "tracex-recovered-close-{}.tracex",
+            std::process::id()
+        ));
+        app.save_session_to(path.clone());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while app.session_archive_busy() {
+            assert!(Instant::now() < deadline);
+            app.poll_session_archive();
+            std::thread::yield_now();
+        }
+        assert!(!app.history_dirty);
+        assert_eq!(app.capture_error.as_deref(), Some(warning.as_str()));
+        app.request_shutdown(now);
+        assert_eq!(app.advance_shutdown(now), ShutdownAction::FinishAutosave);
+        assert_eq!(app.advance_shutdown(now), ShutdownAction::Close);
+        assert_eq!(app.capture_error.as_deref(), Some(warning.as_str()));
+        std::fs::remove_file(path).unwrap();
     }
 }

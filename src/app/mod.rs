@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const WINDOW_BAR_HEIGHT: f32 = 32.0;
-const TOP_HEADER_HEIGHT: f32 = 48.0;
+const WINDOW_BAR_HEIGHT: f32 = 24.0;
+const TOP_HEADER_HEIGHT: f32 = 44.0;
 const LIVE_SCROLL_SETTLE_FRAMES: u8 = 2;
 const COMMAND_HISTORY_LIMIT: usize = 20;
 
@@ -621,7 +621,7 @@ impl TraceXApp {
                 }
                 if !self.can_retain_line_parts(length, capacity) {
                     self.history_limit_reached = true;
-                    self.capture_error = Some("Capture stopped because retained history reached its safety limit. Export retained logs, then clear to process pending received data. Additional device output may be missing.".to_owned());
+                    self.capture_error = Some("Capture stopped because retained history reached its safety limit. Use Save Session to preserve all retained records, then clear to process pending received data. Save the newly drained records separately. Filtered text export may omit records. Additional device output may be missing.".to_owned());
                     self.disconnect();
                     break;
                 }

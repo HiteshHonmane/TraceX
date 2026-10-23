@@ -18,8 +18,12 @@ metadata and shared-handle vector growth. Arithmetic cannot wrap.
 
 On refusal, capture stops, automatic reconnect is disabled, and the triggering
 record remains owned by the bounded inbox. Existing history is unchanged. The
-application explains that the user should export the visible history and clear
-it deliberately to make space for remaining received records. Clearing does not
+application reports the capacity stop. Save Session can preserve all retained
+history fields while the stopped inbox remains pending; filtered text export
+preserves only its matching formatted subset. After a successful retained-session
+snapshot, clear history deliberately to make space for remaining received records.
+The snapshot does not include that pending data; admitting it marks history dirty
+again. A failed save retains the original records and unread inbox. Clearing does not
 automatically reconnect and does not reuse record IDs. Additional device output
 after the stop may be missing; no claim of UART flow-control losslessness is made.
 
@@ -29,7 +33,7 @@ renderer and allocator have separate overheads. Background queries can temporari
 retain older immutable records after Clear while their bounded executing/latest
 pending requests are cancelled; see [query ownership](BACKGROUND-QUERY.md).
 Opening a saved session requires
-an empty workspace after deliberately saving/exporting and clearing existing
+a fully drained capture and an empty workspace after deliberately saving/exporting and clearing existing
 history. The candidate session is subject to the same history budget and is
 installed only after the entire file validates.
 

@@ -247,3 +247,130 @@ fn stopped_capture_pending_data_waits_during_export_then_drains() {
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(directory).unwrap();
 }
+
+fn capacity_stopped_app() -> TraceXApp {
+    let mut app = app();
+    let mut original = records();
+    Arc::make_mut(&mut original[0]).tag = Some("original_tag".into());
+    app.logs = original;
+    app.next_id = 20;
+    app.history = HistoryBudget::new(1, usize::MAX);
+    app.rebuild_history_accounting();
+    app.history_dirty = true;
+    app.search = "nonmatching investigation filter".into();
+    app.show_error = false;
+    let (feed, inbox) = super::super::capture::CaptureInbox::test_channel();
+    feed.send("pending original tail".into()).unwrap();
+    drop(feed);
+    app.capture = Some(inbox);
+    app.connected = true;
+    app.poll();
+    assert!(!app.connected);
+    assert!(app.history_limit_reached);
+    app
+}
+
+#[test]
+fn capacity_stop_session_snapshot_preserves_all_fields_and_leaves_pending_tail_unsaved() {
+    let directory = directory();
+    let path = directory.join("retained.tracex");
+    let mut app = capacity_stopped_app();
+    let original = Arc::clone(&app.logs[0]);
+    app.save_session_to(path.clone());
+    assert!(app.session_archive_busy());
+    assert_eq!(
+        app.capture.as_mut().unwrap().peek_record().unwrap(),
+        "pending original tail"
+    );
+    complete(&mut app);
+    assert!(Arc::ptr_eq(&app.logs[0], &original));
+    assert!(!app.history_dirty, "only retained history was saved");
+    let saved = open(path.clone()).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].id, original.id);
+    assert_eq!(saved[0].timestamp, original.timestamp);
+    assert_eq!(saved[0].level, original.level);
+    assert_eq!(saved[0].tag, original.tag);
+    assert_eq!(saved[0].message, original.message);
+    assert_eq!(saved[0].raw, original.raw);
+    app.poll();
+    assert!(app.history_limit_reached);
+    assert_eq!(app.logs.len(), 1);
+    assert_eq!(
+        app.capture.as_mut().unwrap().peek_record().unwrap(),
+        "pending original tail"
+    );
+    app.clear();
+    app.poll();
+    assert!(app.capture.is_none());
+    assert_eq!(app.logs.len(), 1);
+    assert_eq!(app.logs[0].id, 20);
+    assert_eq!(app.logs[0].raw, "pending original tail");
+    assert!(
+        app.history_dirty,
+        "pending tail was outside the saved snapshot"
+    );
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn failed_capacity_snapshot_preserves_dirty_history_pending_tail_and_existing_file() {
+    let directory = directory();
+    let path = directory.join("existing.tracex");
+    std::fs::write(&path, b"original file").unwrap();
+    let mut app = capacity_stopped_app();
+    let original = Arc::clone(&app.logs[0]);
+    app.save_session_to(path.clone());
+    assert!(app.session_archive_busy());
+    complete(&mut app);
+    assert!(app.session_archive_shutdown_failure().is_some());
+    assert!(app.history_dirty);
+    assert!(Arc::ptr_eq(&app.logs[0], &original));
+    app.poll();
+    assert_eq!(
+        app.capture.as_mut().unwrap().peek_record().unwrap(),
+        "pending original tail"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"original file");
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn session_capabilities_distinguish_stopped_pending_save_from_drained_empty_open() {
+    let mut app = app();
+    assert!(app.can_save_session());
+    assert!(app.can_open_session());
+    let (feed, inbox) = super::super::capture::CaptureInbox::test_channel();
+    feed.send("unread evidence".into()).unwrap();
+    drop(feed);
+    app.capture = Some(inbox);
+    assert!(app.can_save_session());
+    assert!(!app.can_open_session());
+    app.open_session_from(PathBuf::from("must-not-replace-pending.tracex"));
+    assert!(!app.session_archive_busy());
+    assert_eq!(
+        app.capture.as_mut().unwrap().peek_record().unwrap(),
+        "unread evidence"
+    );
+    app.poll();
+    assert!(app.capture.is_none());
+    assert!(
+        !app.can_open_session(),
+        "retained evidence requires deliberate Clear"
+    );
+    app.clear();
+    assert!(app.can_open_session());
+    app.connected = true;
+    assert!(!app.can_save_session());
+    assert!(!app.can_open_session());
+    app.connected = false;
+    app.auto_save.stopping = true;
+    assert!(!app.can_save_session());
+    assert!(!app.can_open_session());
+    app.auto_save.stopping = false;
+    app.request_shutdown(Instant::now());
+    assert!(!app.can_save_session());
+    assert!(!app.can_open_session());
+}

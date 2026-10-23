@@ -1,19 +1,34 @@
 use super::super::*;
 
 impl TraceXApp {
+    pub(super) fn render_session_actions(&mut self, ui: &mut egui::Ui) {
+        if ui.add_enabled(self.can_open_session(), egui::Button::new("Open Session…"))
+            .on_disabled_hover_text("Disconnect and finish capture, then save and clear retained history before opening another session.")
+            .on_hover_text("Validate and reopen a saved TraceX session").clicked() {
+            ui.close_menu();
+            self.choose_open_session();
+        }
+        if ui
+            .add_enabled(self.can_save_session(), egui::Button::new("Save Session…"))
+            .on_disabled_hover_text(
+                "Stop capture and wait for other session file operations to finish.",
+            )
+            .on_hover_text(
+                "Save all currently retained records; queued records are outside this snapshot.",
+            )
+            .clicked()
+        {
+            ui.close_menu();
+            self.choose_save_session();
+        }
+    }
+
     pub(super) fn render_app_menus(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.menu_button("File", |ui| {
             ui.add_enabled_ui(
                 !self.shutdown.active() && !self.session_archive_busy(),
                 |ui| {
-                    if ui.button("Open Session…").clicked() {
-                        ui.close_menu();
-                        self.choose_open_session();
-                    }
-                    if ui.button("Save Session…").clicked() {
-                        ui.close_menu();
-                        self.choose_save_session();
-                    }
+                    self.render_session_actions(ui);
                     if ui.button("Export filtered text…").clicked() {
                         ui.close_menu();
                         self.export_logs();

@@ -116,22 +116,41 @@ impl TraceXApp {
     pub(super) fn session_archive_shutdown_failure(&self) -> Option<String> {
         self.session_archive.failure.clone()
     }
-    fn archive_ready(&mut self) -> bool {
-        if self.shutdown.active()
-            || self.connected
-            || self.capture.is_some()
-            || self.auto_save.stopping
-            || self.session_archive_busy()
-        {
+    /// A stopped capture may retain unread records: Save snapshots only history,
+    /// leaving that inbox owned and pausing ingestion through the archive handoff.
+    pub(super) fn can_save_session(&self) -> bool {
+        !self.shutdown.active()
+            && !self.connected
+            && !self.auto_save.stopping
+            && !self.session_archive_busy()
+    }
+    /// Open cannot replace history or detach a capture that still owns records.
+    pub(super) fn can_open_session(&self) -> bool {
+        self.can_save_session() && self.capture.is_none() && self.logs.is_empty()
+    }
+    fn save_session_ready(&mut self) -> bool {
+        if !self.can_save_session() {
             self.operation_error = Some(
-                "Disconnect and wait for capture/storage/session work to finish first.".to_owned(),
+                "Disconnect and wait for storage/session work before saving retained records."
+                    .to_owned(),
             );
             return false;
         }
         true
     }
+    fn open_session_ready(&mut self) -> bool {
+        if self.can_open_session() {
+            return true;
+        }
+        self.operation_error = Some(if self.can_save_session() && self.capture.is_none() {
+            "Save or export the current records, then deliberately Clear before opening another session.".to_owned()
+        } else {
+            "Disconnect and wait for capture/storage/session work to finish first.".to_owned()
+        });
+        false
+    }
     pub(super) fn save_session_to(&mut self, path: PathBuf) {
-        if !self.archive_ready() {
+        if !self.save_session_ready() {
             return;
         }
         self.start_owned_save(path, SaveKind::Session);
@@ -201,11 +220,7 @@ impl TraceXApp {
         }
     }
     pub(super) fn open_session_from(&mut self, path: PathBuf) {
-        if !self.archive_ready() {
-            return;
-        }
-        if !self.logs.is_empty() {
-            self.operation_error = Some("Save or export the current records, then deliberately Clear before opening another session.".to_owned());
+        if !self.open_session_ready() {
             return;
         }
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -281,7 +296,7 @@ impl TraceXApp {
         }
     }
     pub(super) fn choose_save_session(&mut self) {
-        if !self.archive_ready() {
+        if !self.save_session_ready() {
             return;
         }
         if let Some(path) = rfd::FileDialog::new()
@@ -293,11 +308,7 @@ impl TraceXApp {
         }
     }
     pub(super) fn choose_open_session(&mut self) {
-        if !self.archive_ready() {
-            return;
-        }
-        if !self.logs.is_empty() {
-            self.operation_error = Some("Save or export the current records, then deliberately Clear before opening another session.".to_owned());
+        if !self.open_session_ready() {
             return;
         }
         if let Some(path) = rfd::FileDialog::new()

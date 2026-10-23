@@ -1,9 +1,11 @@
 use super::*;
 
 mod command_bar;
+mod icons;
 mod menus;
 mod sidebar;
 mod tabs;
+mod toolbar;
 
 impl TraceXApp {
     fn render_filter_rows(
@@ -163,10 +165,13 @@ impl TraceXApp {
             .exact_height(WINDOW_BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
-                    .fill(theme::BG_INPUT)
+                    .fill(theme::BG_SIDEBAR)
                     .inner_margin(egui::Margin::symmetric(8.0, 0.0)),
             )
             .show(ctx, |ui| {
+                ui.spacing_mut().button_padding = Vec2::new(6.0, 2.0);
+                ui.spacing_mut().interact_size.y = 20.0;
+                ui.spacing_mut().item_spacing.x = 4.0;
                 let bar_rect = ui.max_rect();
                 let drag_response = ui.interact(
                     bar_rect,
@@ -181,44 +186,56 @@ impl TraceXApp {
                 }
 
                 ui.horizontal(|ui| {
-                    for icon in ["▣", "←", "→"] {
-                        ui.add_sized(
-                            [32.0, WINDOW_BAR_HEIGHT],
-                            egui::Button::new(
-                                RichText::new(icon).size(16.0).color(theme::TEXT_DIM),
-                            )
-                            .fill(Color32::TRANSPARENT)
-                            .stroke(Stroke::NONE),
-                        );
+                    for (icon, label) in [
+                        (icons::Icon::Panel, "Workspace"),
+                        (icons::Icon::Back, "Back"),
+                        (icons::Icon::Forward, "Forward"),
+                    ] {
+                        ui.add_enabled_ui(false, |ui| {
+                            icons::button(
+                                ui,
+                                icon,
+                                label,
+                                Vec2::new(24.0, WINDOW_BAR_HEIGHT),
+                                false,
+                            );
+                        });
                     }
                     ui.add_space(12.0);
-                    self.render_app_menus(ui, ctx);
+                    ui.scope(|ui| {
+                        ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                        ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
+                        self.render_app_menus(ui, ctx);
+                    });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let close = ui.add_sized(
-                            [44.0, WINDOW_BAR_HEIGHT],
-                            egui::Button::new(RichText::new("×").size(17.0).color(theme::TEXT_DIM))
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
+                        let close = icons::button(
+                            ui,
+                            icons::Icon::Close,
+                            "Close",
+                            Vec2::new(40.0, WINDOW_BAR_HEIGHT),
+                            false,
                         );
                         if close.clicked() {
                             self.request_shutdown(Instant::now());
                         }
-                        let maximize = ui.add_sized(
-                            [44.0, WINDOW_BAR_HEIGHT],
-                            egui::Button::new(RichText::new("□").size(14.0).color(theme::TEXT_DIM))
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
+                        let maximize = icons::button(
+                            ui,
+                            icons::Icon::Maximize,
+                            "Maximize or restore",
+                            Vec2::new(40.0, WINDOW_BAR_HEIGHT),
+                            false,
                         );
                         if maximize.clicked() {
                             let maximized =
                                 ctx.input(|input| input.viewport().maximized.unwrap_or(false));
                             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
                         }
-                        let minimize = ui.add_sized(
-                            [44.0, WINDOW_BAR_HEIGHT],
-                            egui::Button::new(RichText::new("—").size(14.0).color(theme::TEXT_DIM))
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
+                        let minimize = icons::button(
+                            ui,
+                            icons::Icon::Minimize,
+                            "Minimize",
+                            Vec2::new(40.0, WINDOW_BAR_HEIGHT),
+                            false,
                         );
                         if minimize.clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -308,184 +325,7 @@ impl eframe::App for TraceXApp {
                     });
                     return;
                 }
-                let previous_item_spacing_y = ui.spacing().item_spacing.y;
-                ui.spacing_mut().item_spacing.y = 0.0;
-                egui::Frame::none()
-                    .fill(theme::BG_PANEL)
-                    .inner_margin(egui::Margin::symmetric(16.0, 0.0))
-                    .show(ui, |ui| {
-                        ui.allocate_ui_with_layout(
-                            Vec2::new(ui.available_width(), 52.0),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                ui.add_sized(
-                                    [280.0, 34.0],
-                                    egui::TextEdit::singleline(&mut self.search)
-                                        .font(FontId::proportional(13.0))
-                                        .vertical_align(egui::Align::Center)
-                                        .margin(egui::Margin::symmetric(10.0, 6.0))
-                                        .hint_text("Search logs"),
-                                );
-                                ui.add_space(12.0);
-                                ui.separator();
-                                ui.add_space(12.0);
-                                if ui
-                                    .add_sized(
-                                        [66.0, 30.0],
-                                        egui::Button::new(
-                                            RichText::new("⊙  INFO")
-                                                .monospace()
-                                                .size(9.0)
-                                                .color(theme::INFO)
-                                                .strong(),
-                                        )
-                                        .fill(if self.show_info {
-                                            theme::tint(theme::INFO, 24)
-                                        } else {
-                                            theme::BG_INPUT
-                                        })
-                                        .stroke(Stroke::new(1.0_f32, theme::tint(theme::INFO, 92)))
-                                        .rounding(4.0),
-                                    )
-                                    .clicked()
-                                {
-                                    self.show_info = !self.show_info;
-                                }
-                                if ui
-                                    .add_sized(
-                                        [68.0, 30.0],
-                                        egui::Button::new(
-                                            RichText::new("⊙  WARN")
-                                                .monospace()
-                                                .size(9.0)
-                                                .color(theme::WARNING)
-                                                .strong(),
-                                        )
-                                        .fill(if self.show_warn {
-                                            theme::tint(theme::WARNING, 24)
-                                        } else {
-                                            theme::BG_INPUT
-                                        })
-                                        .stroke(Stroke::new(
-                                            1.0_f32,
-                                            theme::tint(theme::WARNING, 92),
-                                        ))
-                                        .rounding(4.0),
-                                    )
-                                    .clicked()
-                                {
-                                    self.show_warn = !self.show_warn;
-                                }
-                                if ui
-                                    .add_sized(
-                                        [72.0, 30.0],
-                                        egui::Button::new(
-                                            RichText::new("⊙  ERROR")
-                                                .monospace()
-                                                .size(9.0)
-                                                .color(theme::ERROR)
-                                                .strong(),
-                                        )
-                                        .fill(if self.show_error {
-                                            theme::tint(theme::ERROR, 24)
-                                        } else {
-                                            theme::BG_INPUT
-                                        })
-                                        .stroke(Stroke::new(1.0_f32, theme::tint(theme::ERROR, 92)))
-                                        .rounding(4.0),
-                                    )
-                                    .clicked()
-                                {
-                                    self.show_error = !self.show_error;
-                                }
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui
-                                            .add_sized(
-                                                [36.0, 32.0],
-                                                egui::Button::new(
-                                                    RichText::new("▤")
-                                                        .size(15.0)
-                                                        .color(theme::ERROR),
-                                                )
-                                                .rounding(4.0),
-                                            )
-                                            .on_hover_text("Clear logs")
-                                            .clicked()
-                                        {
-                                            self.clear();
-                                        }
-                                        if ui
-                                            .add_sized(
-                                                [36.0, 32.0],
-                                                egui::Button::new(
-                                                    RichText::new("▣")
-                                                        .size(14.0)
-                                                        .color(theme::TEXT_DIM),
-                                                )
-                                                .rounding(4.0),
-                                            )
-                                            .on_hover_text("Copy all logs")
-                                            .clicked()
-                                        {
-                                            self.copy_all(ctx);
-                                        }
-                                        let follow_clicked = ui
-                                            .add_sized(
-                                                [36.0, 32.0],
-                                                egui::Button::new(
-                                                    RichText::new("↓").size(16.0).color(
-                                                        if self.auto_scroll {
-                                                            theme::ACCENT
-                                                        } else {
-                                                            theme::TEXT_MUTED
-                                                        },
-                                                    ),
-                                                )
-                                                .fill(theme::BG_INPUT)
-                                                .stroke(Stroke::new(1.0_f32, theme::BORDER)),
-                                            )
-                                            .on_hover_text("Follow incoming logs")
-                                            .clicked();
-                                        if follow_clicked {
-                                            self.auto_scroll = !self.auto_scroll;
-                                            self.live_scroll_frames =
-                                                live_scroll_frames_after_toggle(
-                                                    true,
-                                                    self.auto_scroll,
-                                                );
-                                        }
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "{:.0}/s  ·  {} lines{}",
-                                                self.rate,
-                                                self.logs.len(),
-                                                if self.query_failure().is_some() {
-                                                    " · Search failed"
-                                                } else if self.query_pending() {
-                                                    " · Searching…"
-                                                } else {
-                                                    ""
-                                                }
-                                            ))
-                                            .monospace()
-                                            .size(9.0)
-                                            .color(theme::TEXT_MUTED),
-                                        )
-                                        .on_hover_text(
-                                            self.query_failure().unwrap_or(
-                                                "Search results update in the background.",
-                                            ),
-                                        );
-                                    },
-                                );
-                            },
-                        );
-                    });
-                ui.separator();
-                ui.spacing_mut().item_spacing.y = previous_item_spacing_y;
-
+                self.render_toolbar(ui, ctx);
                 self.refresh_query_view();
                 let snapshot = self
                     .query_snapshot()
@@ -679,7 +519,15 @@ impl eframe::App for TraceXApp {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         ui.add_space(8.0);
-                                        if ui.small_button("×").clicked() {
+                                        if icons::button(
+                                            ui,
+                                            icons::Icon::Close,
+                                            "Close filter results",
+                                            Vec2::splat(22.0),
+                                            false,
+                                        )
+                                        .clicked()
+                                        {
                                             self.filter_panel_open = false;
                                         }
                                     },
