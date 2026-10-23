@@ -1,8 +1,9 @@
 use crate::domain::log::*;
+use crate::domain::query::{LogQuery, QueryScope, SeveritySelection};
 use chrono::Local;
 use directories::UserDirs;
 use eframe::egui::{self, Color32, FontId, RichText, Stroke, Vec2};
-use serialport::{SerialPort, available_ports};
+use serialport::available_ports;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write as IoWrite};
@@ -57,20 +58,30 @@ fn register_submitted_command(history: &mut Vec<String>, command: &str) -> Optio
 // ═══════════════════════════════════════════════════════════════════════════════
 
 impl TraceXApp {
-    fn level_visible(&self, level: LogLevel) -> bool {
-        match level {
-            LogLevel::Info => self.show_info,
-            LogLevel::Warn => self.show_warn,
-            LogLevel::Error => self.show_error,
-            _ => true,
-        }
+    fn log_query(&self) -> LogQuery {
+        LogQuery::new(
+            &self.search,
+            SeveritySelection {
+                info: self.show_info,
+                warn: self.show_warn,
+                error: self.show_error,
+            },
+        )
+    }
+
+    fn query_indices(&self, scope: QueryScope) -> Vec<usize> {
+        self.log_query().indices(&self.logs, scope)
     }
 }
 
+mod autosave;
+mod autosave_worker;
 mod log_format;
 mod storage;
+use autosave::AutosaveController;
 
 use log_format::*;
+#[cfg(test)]
 use storage::*;
 mod ui;
 
@@ -242,7 +253,6 @@ struct TraceXApp {
     paused: bool,
     serial_tx: Option<Sender<Vec<u8>>>,
     log_rx: Option<Receiver<String>>,
-    disconnect_rx: Option<Receiver<()>>,
     stop_flag: Option<Arc<Mutex<bool>>>,
     last_connected_port: Option<String>,
 
@@ -269,7 +279,7 @@ struct TraceXApp {
     auto_save_enabled: bool,
     auto_save_path: Option<PathBuf>,
     auto_save_current_path: Option<PathBuf>,
-    auto_save_file: Option<std::fs::File>,
+    auto_save: AutosaveController,
     auto_save_limit_mb: u64,
     auto_save_bytes_written: u64,
     auto_save_sequence: u32,
@@ -321,6 +331,10 @@ impl TraceXApp {
             }
         });
 
+        Self::with_ports(ports)
+    }
+
+    fn with_ports(ports: Arc<Mutex<Vec<(String, String)>>>) -> Self {
         Self {
             ports,
             selected_port: String::new(),
@@ -330,7 +344,6 @@ impl TraceXApp {
             paused: false,
             serial_tx: None,
             log_rx: None,
-            disconnect_rx: None,
             stop_flag: None,
             last_connected_port: None,
 
@@ -353,7 +366,7 @@ impl TraceXApp {
             auto_save_enabled: false,
             auto_save_path: Some(Self::default_log_path()),
             auto_save_current_path: None,
-            auto_save_file: None,
+            auto_save: AutosaveController::default(),
             auto_save_limit_mb: 25,
             auto_save_bytes_written: 0,
             auto_save_sequence: 0,
@@ -461,122 +474,6 @@ impl TraceXApp {
             .collect()
     }
 
-    fn open_new_auto_save_file(&mut self) {
-        let base = self
-            .auto_save_path
-            .clone()
-            .unwrap_or_else(Self::default_log_path);
-        match create_timestamped_log_file(&base, Local::now(), self.auto_save_sequence) {
-            Ok((file, path, next_sequence)) => {
-                self.auto_save_file = Some(file);
-                self.auto_save_current_path = Some(path);
-                self.auto_save_bytes_written = 0;
-                self.auto_save_sequence = next_sequence;
-                self.auto_save_error = None;
-            }
-            Err(error) => {
-                self.auto_save_file = None;
-                self.auto_save_current_path = None;
-                self.auto_save_bytes_written = 0;
-                self.auto_save_error = Some(format!("Could not create log file: {error}"));
-            }
-        }
-    }
-
-    fn apply_auto_save_enabled_change(&mut self) {
-        if self.auto_save_enabled {
-            if self.auto_save_file.is_none() {
-                self.open_new_auto_save_file();
-            }
-        } else {
-            self.auto_save_file = None;
-            self.auto_save_bytes_written = 0;
-            self.auto_save_error = None;
-        }
-    }
-
-    fn render_auto_save_status(&self, ui: &mut egui::Ui) {
-        if let Some(error) = self.auto_save_error.as_ref() {
-            ui.label(
-                RichText::new(error)
-                    .monospace()
-                    .size(8.5)
-                    .color(theme::ERROR),
-            );
-        } else if let Some(path) = self.auto_save_current_path.as_ref() {
-            let label = if self.auto_save_enabled {
-                "Saving to"
-            } else {
-                "Last file"
-            };
-            ui.label(
-                RichText::new(format!("{label}: {}", path.display()))
-                    .monospace()
-                    .size(8.5)
-                    .color(theme::TEXT_MUTED),
-            );
-        }
-    }
-
-    fn render_settings(&mut self, ui: &mut egui::Ui) {
-        ui.label(
-            RichText::new("LOG FILES")
-                .size(10.0)
-                .color(theme::ACCENT)
-                .strong(),
-        );
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label("File limit");
-            ui.add(
-                egui::DragValue::new(&mut self.auto_save_limit_mb)
-                    .range(1..=4096)
-                    .suffix(" MB"),
-            );
-        });
-        ui.add_space(4.0);
-        if ui.button("Choose save location").clicked() {
-            self.choose_save_path();
-        }
-    }
-
-    fn append_auto_save_line(&mut self, line: &str) {
-        if !self.auto_save_enabled {
-            return;
-        }
-
-        let payload = format!("{line}\n");
-        if self.auto_save_file.is_none() {
-            self.open_new_auto_save_file();
-        }
-        if should_rotate_log(
-            self.auto_save_bytes_written,
-            payload.len(),
-            self.auto_save_limit_mb,
-        ) {
-            self.auto_save_file = None;
-            self.open_new_auto_save_file();
-        }
-
-        let write_result = self
-            .auto_save_file
-            .as_mut()
-            .map(|file| file.write_all(payload.as_bytes()));
-        if let Some(result) = write_result {
-            match result {
-                Ok(()) => {
-                    self.auto_save_bytes_written = self
-                        .auto_save_bytes_written
-                        .saturating_add(payload.len() as u64);
-                }
-                Err(error) => {
-                    self.auto_save_file = None;
-                    self.auto_save_error = Some(format!("Could not save log data: {error}"));
-                }
-            }
-        }
-    }
-
     fn record_log_line(&mut self, line: String) {
         let timestamp = Local::now().format("%H:%M:%S.%3f").to_string();
         let entry = LogEntry::new(self.next_id, line, timestamp);
@@ -594,6 +491,11 @@ impl TraceXApp {
     }
 
     fn connect(&mut self) {
+        if self.log_rx.is_some() || self.auto_save.stopping {
+            self.operation_error =
+                Some("Wait for the previous connection to finish disconnecting.".to_owned());
+            return;
+        }
         if self.selected_port.is_empty() {
             self.operation_error = Some("Select a serial port before connecting.".to_owned());
             return;
@@ -612,17 +514,15 @@ impl TraceXApp {
 
         let (log_tx, log_rx) = channel();
         let (cmd_tx, cmd_rx) = channel::<Vec<u8>>();
-        let (disconnect_tx, disconnect_rx) = channel();
         let stop = Arc::new(Mutex::new(false));
         let stop_clone = Arc::clone(&stop);
 
         self.log_rx = Some(log_rx);
-        self.disconnect_rx = Some(disconnect_rx);
         self.serial_tx = Some(cmd_tx);
         self.stop_flag = Some(stop);
 
         thread::spawn(move || {
-            Self::serial_thread(port, log_tx, cmd_rx, stop_clone, disconnect_tx);
+            Self::serial_thread(port, log_tx, cmd_rx, stop_clone);
         });
 
         self.connected = true;
@@ -630,7 +530,7 @@ impl TraceXApp {
         self.operation_error = None;
         self.last_connected_port = Some(self.selected_port.clone());
 
-        if self.auto_save_enabled && self.auto_save_file.is_none() {
+        if self.auto_save_enabled && !self.auto_save.active {
             self.open_new_auto_save_file();
         }
     }
@@ -642,24 +542,20 @@ impl TraceXApp {
             *f = true;
         }
         self.connected = false;
-        self.log_rx = None;
-        self.disconnect_rx = None;
+        // Retain incoming logs and autosave until the worker closes its channel.
         self.serial_tx = None;
-        self.stop_flag = None;
-        self.auto_save_file = None;
         // Clear last_connected_port on manual disconnect to prevent auto-reconnect
         self.last_connected_port = None;
     }
 
     fn serial_thread(
-        mut port: Box<dyn SerialPort>,
+        mut port: impl Read + IoWrite,
         log_tx: Sender<String>,
         cmd_rx: Receiver<Vec<u8>>,
         stop: Arc<Mutex<bool>>,
-        disconnect_tx: Sender<()>,
     ) {
         let mut buf = [0u8; 4096];
-        let mut line_buf = String::new();
+        let mut framer = crate::domain::stream_framing::StreamFramer::default();
 
         loop {
             if stop.lock().map(|f| *f).unwrap_or(true) {
@@ -671,7 +567,6 @@ impl TraceXApp {
                 Ok(data) => {
                     if port.write_all(&data).is_err() {
                         // Port disconnected
-                        let _ = disconnect_tx.send(());
                         break;
                     }
                 }
@@ -682,55 +577,43 @@ impl TraceXApp {
             // Read incoming data
             match port.read(&mut buf) {
                 Ok(n) if n > 0 => {
-                    if let Ok(text) = std::str::from_utf8(&buf[..n]) {
-                        line_buf.push_str(text);
-                        while let Some(pos) = line_buf.find('\n') {
-                            let line = line_buf[..pos].trim_end_matches('\r').to_string();
-                            if !line.is_empty() {
-                                let _ = log_tx.send(line);
-                            }
-                            line_buf = line_buf[pos + 1..].to_string();
-                        }
-                    }
+                    framer.push(&buf[..n], |line| {
+                        let _ = log_tx.send(line);
+                    });
                 }
                 Ok(_) => {}
                 Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
                 Err(_) => {
                     // Port disconnected unexpectedly
-                    let _ = disconnect_tx.send(());
                     break;
                 }
             }
 
             thread::sleep(Duration::from_millis(1));
         }
+        if let Some(line) = framer.finish() {
+            let _ = log_tx.send(line);
+        }
+        // Release the transport before channel closure permits reconnect.
+        drop(port);
+        drop(log_tx);
     }
 
     fn poll(&mut self) {
-        if let Some(rx) = self.disconnect_rx.as_ref()
-            && rx.try_recv().is_ok()
-        {
-            self.handle_disconnection();
-        }
-
-        let mut received = Vec::new();
-        let mut channel_disconnected = false;
-        if let Some(rx) = self.log_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(line) => {
-                    received.push(line);
-                    received.extend(rx.try_iter());
-                }
-                Err(TryRecvError::Disconnected) => channel_disconnected = true,
-                Err(TryRecvError::Empty) => {}
+        self.poll_auto_save();
+        // Limit per-frame work and stop consuming when storage applies backpressure.
+        for _ in 0..256 {
+            if !self.can_ingest_log() {
+                break;
             }
-        }
-
-        if channel_disconnected && self.connected {
-            self.handle_disconnection();
-        } else {
-            for line in received {
-                self.record_log_line(line);
+            let received = self.log_rx.as_ref().map(Receiver::try_recv);
+            match received {
+                Some(Ok(line)) => self.record_log_line(line),
+                Some(Err(TryRecvError::Disconnected)) => {
+                    self.handle_disconnection();
+                    break;
+                }
+                Some(Err(TryRecvError::Empty)) | None => break,
             }
         }
 
@@ -745,10 +628,9 @@ impl TraceXApp {
         // Clean up connection state but keep last_connected_port for auto-reconnect
         self.connected = false;
         self.log_rx = None;
-        self.disconnect_rx = None;
         self.serial_tx = None;
         self.stop_flag = None;
-        self.auto_save_file = None;
+        self.stop_auto_save();
         // Reset reconnect cooldown
         self.reconnect_cooldown = Instant::now();
     }
@@ -757,6 +639,8 @@ impl TraceXApp {
         // Auto-reconnect if we were connected and the same port is available again
         // Add a small cooldown to avoid rapid reconnection attempts
         if !self.connected
+            && self.log_rx.is_none()
+            && !self.auto_save.stopping
             && self.reconnect_cooldown.elapsed() >= Duration::from_millis(500)
             && let Some(ref last_port) = self.last_connected_port
         {
@@ -796,20 +680,19 @@ impl TraceXApp {
     }
 
     fn filtered(&self) -> Vec<&LogEntry> {
-        if self.search.is_empty() {
-            self.logs.iter().collect()
-        } else {
-            let s = self.search.to_lowercase();
-            self.logs
-                .iter()
-                .filter(|e| e.message.to_lowercase().contains(&s))
-                .collect()
-        }
+        self.query_indices(QueryScope::Main)
+            .into_iter()
+            .map(|index| &self.logs[index])
+            .collect()
+    }
+
+    fn export_text(&self) -> String {
+        format_log_entries(self.filtered())
     }
 
     fn copy_selected(&self, ctx: &egui::Context) {
         let text = if self.selected.is_empty() {
-            format_log_entries(self.filtered())
+            self.export_text()
         } else {
             format_log_entries(self.logs.iter().filter(|e| self.selected.contains(&e.id)))
         };
@@ -826,44 +709,13 @@ impl TraceXApp {
         self.next_id = 0;
     }
 
-    fn choose_save_path(&mut self) {
-        let default_name = self
-            .auto_save_path
-            .as_ref()
-            .and_then(|p| p.file_name().and_then(|n| n.to_str()))
-            .unwrap_or("TraceX.log")
-            .to_string();
-
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Log", &["log", "txt"])
-            .set_file_name(&default_name)
-            .save_file()
-        {
-            self.auto_save_path = Some(path);
-            self.auto_save_current_path = None;
-            self.auto_save_file = None;
-            self.auto_save_bytes_written = 0;
-            self.auto_save_sequence = 0;
-            self.auto_save_error = None;
-
-            if self.auto_save_enabled {
-                self.open_new_auto_save_file();
-            }
-        }
-    }
-
     fn export_logs(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Log", &["log", "txt"])
             .set_file_name("export.log")
             .save_file()
         {
-            let content = self
-                .filtered()
-                .iter()
-                .map(|entry| format_log_line(&entry.timestamp, entry.level, &entry.message))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let content = self.export_text();
             self.operation_error = fs::write(path, content)
                 .err()
                 .map(|error| format!("Could not export logs: {error}"));

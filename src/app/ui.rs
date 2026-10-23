@@ -5,6 +5,14 @@ mod sidebar;
 mod tabs;
 
 impl TraceXApp {
+    // Monitor tabs currently present the same capture; opening a view must not
+    // reset logs, selection, or the active transport.
+    fn open_monitor_view(&mut self) {
+        if let Some(tab) = self.ui_tabs.get_mut(self.active_tab) {
+            tab.setup = false;
+        }
+    }
+
     fn render_window_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("window_bar")
             .exact_height(WINDOW_BAR_HEIGHT)
@@ -128,7 +136,7 @@ impl eframe::App for TraceXApp {
                         );
                         ui.add_space(8.0);
                         ui.label(
-                            RichText::new("Choose a port and baud rate from the scrollable lists.")
+                            RichText::new("Monitor tabs share the current capture and connection.")
                                 .size(11.0)
                                 .color(theme::TEXT_DIM),
                         );
@@ -147,10 +155,7 @@ impl eframe::App for TraceXApp {
                             )
                             .clicked()
                         {
-                            self.clear();
-                            if let Some(tab) = self.ui_tabs.get_mut(self.active_tab) {
-                                tab.setup = false;
-                            }
+                            self.open_monitor_view();
                         }
                         ui.add_space(6.0);
                         if ui.small_button("Back to current monitor").clicked() {
@@ -319,26 +324,7 @@ impl eframe::App for TraceXApp {
                 ui.separator();
                 ui.spacing_mut().item_spacing.y = previous_item_spacing_y;
 
-                let rows: Vec<_> = self
-                    .logs
-                    .iter()
-                    .filter(|e| self.level_visible(e.level))
-                    .filter(|e| {
-                        let query = self.search.trim();
-                        query.is_empty()
-                            || e.message.to_lowercase().contains(&query.to_lowercase())
-                            || e.raw.to_lowercase().contains(&query.to_lowercase())
-                    })
-                    .map(|e| {
-                        (
-                            e.id,
-                            e.timestamp.clone(),
-                            e.level,
-                            e.message.clone(),
-                            self.selected.contains(&e.id),
-                        )
-                    })
-                    .collect();
+                let rows = self.query_indices(QueryScope::Main);
                 let selected_copy = selected_log_text(&self.logs, &self.selected);
                 const LOG_ROW_HEIGHT: f32 = 30.0;
                 let jump_target = self.scroll_to_log;
@@ -360,10 +346,10 @@ impl eframe::App for TraceXApp {
                     let row_height_sans_spacing =
                         (LOG_ROW_HEIGHT - ui.spacing().item_spacing.y).max(1.0);
                     let target_index = jump_target.and_then(|target_id| {
-                        rows.iter().position(|(id, _, _, _, _)| *id == target_id)
+                        rows.iter().position(|&index| self.logs[index].id == target_id)
                     });
                     let content_width = log_content_width(
-                        rows.iter().map(|(_, _, _, message, _)| message.as_str()),
+                        rows.iter().map(|&index| self.logs[index].message.as_str()),
                         ui.available_width(),
                     );
                     let mut log_scroll = egui::ScrollArea::both()
@@ -391,10 +377,12 @@ impl eframe::App for TraceXApp {
                         |ui, range| {
                             ui.set_min_width(content_width);
                             for i in range {
-                                let (id, ts, level, msg, selected) = &rows[i];
+                                let entry = &self.logs[rows[i]];
+                                let (id, ts, level, msg) = (&entry.id, &entry.timestamp, &entry.level, &entry.message);
+                                let selected = self.selected.contains(id);
                                 let line = format_log_line(ts, *level, msg);
                                 let response =
-                                    render_primary_log_row(ui, i + 1, ts, *level, msg, *selected)
+                                    render_primary_log_row(ui, i + 1, ts, *level, msg, selected)
                                         .on_hover_text(
                                             "Click to select • Right-click to copy this row",
                                         );
@@ -450,32 +438,9 @@ impl eframe::App for TraceXApp {
                         self.filter_results_height = (self.filter_results_height - pointer_delta)
                             .clamp(120.0, (available_log_height - 100.0).max(120.0));
                     }
-                    let query = self.search.trim().to_lowercase();
-                    let results: Vec<_> = self
-                        .logs
-                        .iter()
-                        .filter(|entry| {
-                            if !self.level_visible(entry.level) || query.is_empty() {
-                                return false;
-                            }
-                            let contains = entry.message.to_lowercase().contains(&query)
-                                || entry.raw.to_lowercase().contains(&query);
-                            if self.filter_exclude {
-                                !contains
-                            } else {
-                                contains
-                            }
-                        })
-                        .map(|entry| {
-                            (
-                                entry.id,
-                                entry.timestamp.clone(),
-                                entry.level,
-                                entry.message.clone(),
-                            )
-                        })
-                        .collect();
-
+                    let query_empty = self.log_query().is_empty();
+                    let scope = if self.filter_exclude { QueryScope::Exclude } else { QueryScope::Include };
+                    let results = self.query_indices(scope);
                     ui.allocate_ui(Vec2::new(ui.available_width(), results_height), |ui| {
                         ui.allocate_ui_with_layout(
                             Vec2::new(ui.available_width(), 30.0),
@@ -522,11 +487,7 @@ impl eframe::App for TraceXApp {
                                     )
                                     .clicked()
                                 {
-                                    ctx.copy_text(format_log_rows(results.iter().map(
-                                        |(_, timestamp, level, message)| {
-                                            (timestamp.as_str(), *level, message.as_str())
-                                        },
-                                    )));
+                                    ctx.copy_text(format_log_entries(results.iter().map(|&index| &self.logs[index])));
                                 }
                                 if ui
                                     .add_sized(
@@ -556,7 +517,7 @@ impl eframe::App for TraceXApp {
                         );
                         ui.separator();
 
-                        if query.is_empty() {
+                        if query_empty {
                             ui.add_space(16.0);
                             ui.centered_and_justified(|ui| {
                                 ui.label(
@@ -576,7 +537,7 @@ impl eframe::App for TraceXApp {
                             });
                         } else {
                             let content_width = log_content_width(
-                                results.iter().map(|(_, _, _, message)| message.as_str()),
+                                results.iter().map(|&index| self.logs[index].message.as_str()),
                                 ui.available_width(),
                             );
                             egui::ScrollArea::both()
@@ -584,7 +545,9 @@ impl eframe::App for TraceXApp {
                                 .auto_shrink([false; 2])
                                 .show(ui, |ui| {
                                     ui.set_min_width(content_width);
-                                    for (id, timestamp, level, message) in &results {
+                                    for &index in &results {
+                                        let entry = &self.logs[index];
+                                        let (id, timestamp, level, message) = (&entry.id, &entry.timestamp, &entry.level, &entry.message);
                                         let selected = self.selected.contains(id);
                                         let (rect, response) = ui.allocate_exact_size(
                                             Vec2::new(ui.available_width(), 25.0),
@@ -672,3 +635,97 @@ impl eframe::App for TraceXApp {
 // ═══════════════════════════════════════════════════════════════════════════════
 // ESP-IDF LOG PARSER
 // ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod monitor_view_tests {
+    use super::*;
+
+    // No serial enumeration, worker thread, user directories, or disk access.
+    fn app_without_io() -> TraceXApp {
+        TraceXApp {
+            ports: Arc::new(Mutex::new(Vec::new())),
+            selected_port: String::new(),
+            baud_rate: 115200,
+
+            connected: false,
+            paused: false,
+            serial_tx: None,
+            log_rx: None,
+            stop_flag: None,
+            last_connected_port: None,
+
+            logs: Vec::new(),
+            next_id: 0,
+
+            command_input: String::new(),
+            command_history: Vec::new(),
+            send_newline: true,
+            auto_clear_command: true,
+
+            search: String::new(),
+            selected: HashSet::new(),
+            filter_panel_open: false,
+            filter_exclude: false,
+            filter_results_height: 180.0,
+            scroll_to_log: None,
+            scroll_jump_settle_frames: 0,
+
+            auto_save_enabled: false,
+            auto_save_path: None,
+            auto_save_current_path: None,
+            auto_save: AutosaveController::default(),
+            auto_save_limit_mb: 25,
+            auto_save_bytes_written: 0,
+            auto_save_sequence: 0,
+            auto_save_error: None,
+            operation_error: None,
+
+            auto_scroll: true,
+            live_scroll_frames: 0,
+            ui_tabs: vec![UiTab {
+                title: "Monitor 1".to_string(),
+                setup: false,
+            }],
+            active_tab: 0,
+            show_info: true,
+            show_warn: true,
+            show_error: true,
+            theme_ready: false,
+
+            rate: 0.0,
+            rate_count: 0,
+            rate_timer: Instant::now(),
+
+            reconnect_cooldown: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn opening_monitor_preserves_shared_capture_and_selection() {
+        let mut app = app_without_io();
+        app.logs.push(LogEntry::new(
+            7,
+            "captured before opening".to_owned(),
+            "12:00:00",
+        ));
+        app.next_id = 8;
+        app.selected.insert(7);
+        app.selected_port = "test-device".to_owned();
+        app.ui_tabs.push(UiTab {
+            title: "Monitor 2".to_owned(),
+            setup: true,
+        });
+        app.active_tab = 1;
+
+        app.open_monitor_view();
+        app.open_monitor_view();
+
+        assert!(!app.ui_tabs[1].setup);
+        assert_eq!(app.logs.len(), 1);
+        assert_eq!(app.logs[0].id, 7);
+        assert_eq!(app.logs[0].raw, "captured before opening");
+        assert_eq!(app.next_id, 8);
+        assert!(app.selected.contains(&7));
+        assert_eq!(app.selected_port, "test-device");
+    }
+}

@@ -1,0 +1,63 @@
+TraceX third-party notices — Windows x86_64 development preview
+Inventory date: 2026-10-23
+
+This package contains third-party Rust components and fonts under their own
+licenses. Their terms and rights are preserved independently of the TraceX
+BINARY-LICENSE.txt. Nothing in TraceX's binary terms limits those rights.
+
+THIRD-PARTY-INVENTORY.json lists 174 registry packages from the locked Cargo
+metadata graph filtered for x86_64-pc-windows-msvc. This conservative inventory
+includes build dependencies and optional backend packages present in that graph;
+it does not claim every listed package is linked into this particular binary.
+The inventory records declared SPDX expressions, versions, repositories, exact
+crate archive SHA-256 values, upstream notice files, and bundled source status.
+
+THIRD-PARTY-LICENSES/<name-version>/ retains complete upstream license/notice
+files plus available READMEs. Where a published crate omitted license texts,
+upstream license files were retrieved at its packaged VCS revision where
+available. Egui-family crates with unavailable packaged revisions use the
+upstream 0.30.0 release tag. CC0-1.0 for hexf-parse uses the SPDX license-list
+text. THIRD-PARTY-UPSTREAM-SOURCES.json records those exact retrieval URLs.
+No upstream copyright or license text was rewritten.
+
+For dual-license packages both supplied texts are retained; Apache-2.0 is the
+selected alternative where an Apache choice is offered. Conjunctive license
+expressions retain every supplied required text. Packages without Apache choices
+retain their declared MIT, BSD, Boost, ISC, Zlib, Unicode, CC0 or other supplied
+terms. The inventory is evidence of collection, not legal certification.
+
+Fonts: epaint_default_fonts includes Ubuntu (Ubuntu Font Licence), Noto Emoji
+(SIL OFL), Hack (MIT plus Bitstream Vera notices), and emoji-icon-font (MIT).
+Complete supplied font notices and texts are under that package's fonts/
+subdirectory; FONT-NOTICES.txt preserves embedded font copyright/license name
+records. These font terms remain separate from the Rust code license choice.
+
+MPL-2.0 SOURCE AVAILABILITY
+The source for serialport 4.8.1 and option-ext 0.2.0 is provided with this archive
+in THIRD-PARTY-SOURCES/serialport-4.8.1.crate and option-ext-0.2.0.crate.
+These are the exact original source archives, with SHA-256 verified against
+Cargo.lock. No modifications to those upstream crates are made by TraceX.
+Their source code is available under MPL-2.0; full MPL license text and upstream
+notices accompany each package in THIRD-PARTY-LICENSES/ and inside its archive.
+A .crate file is a gzip-compressed tar archive: extract it with standard tar,
+for example: tar -xzf serialport-4.8.1.crate
+The corresponding official source downloads are also available at:
+https://static.crates.io/crates/serialport/serialport-4.8.1.crate
+https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate
+Recipients retain all rights granted by the MPL. For background, see Mozilla's
+MPL distribution FAQ: https://www.mozilla.org/en-US/MPL/2.0/FAQ/
+Additional original crate archives are included for packages whose published
+archives omitted standalone license texts, preserving their original notices.
+
+The preview remains unsigned and has known operational limitations described
+in README.txt. No third-party author or licensor endorses TraceX or supplies
+TraceX-specific warranties. Consult each supplied license for its full terms.
+
+RUST STANDARD LIBRARY / LINKED RUNTIME NOTICES
+THIRD-PARTY-RUST-RUNTIME/COPYRIGHT-library.html and its licenses/ directory are
+copied unchanged from the build toolchain's share/doc/rust documentation.
+The toolchain version and hashes are recorded in THIRD-PARTY-RUST-RUNTIME.json.
+This conservative standard-library notice bundle is separate from the Cargo
+package graph. Included exception/alternative license texts do not imply the
+TraceX source is covered by all of those licenses. No compiler executable or
+Microsoft runtime redistributable installer is bundled.

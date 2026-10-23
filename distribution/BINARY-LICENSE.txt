@@ -1,0 +1,29 @@
+TraceX Development Preview Binary License
+Version 1 — 23 October 2026
+
+Copyright (c) 2026 Hitesh Shivaji Honmane.
+
+Permission is granted, without charge, to download, install, copy and use this
+TraceX development preview executable for personal use and internal business
+use, including evaluation. You may share the complete, unmodified distribution
+archive without charge, retaining this license, notices and accompanying files.
+No subscription or account is required to use this preview. This grant applies
+to this distributed version; it does not promise future versions or support.
+
+This license covers the TraceX executable distributed with it. It does not grant
+a license to TraceX source code, trademarks, or the right to sell or sublicense
+TraceX. All rights not expressly granted are reserved. Rights that applicable
+law does not permit to be restricted are unaffected.
+
+Third-party components are governed by their own licenses, provided in the
+THIRD-PARTY materials accompanying this distribution. Those licenses prevail
+for their respective components; nothing here limits rights they grant.
+
+This is an unsigned development preview, not a production-qualified release.
+It is provided "AS IS", without warranty of any kind, express or implied,
+including warranties of merchantability, fitness for a particular purpose and
+noninfringement. To the extent permitted by applicable law, the copyright
+holder is not liable for claims, damages or other liability arising from use
+of the software. Mandatory statutory rights remain unaffected.
+
+See the included preview notes for known capture, storage and recovery limits.

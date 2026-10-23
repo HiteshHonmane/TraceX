@@ -264,3 +264,205 @@ fn timestamped_autosave_file_is_created_immediately_and_never_overwritten() {
     let _ = fs::remove_file(second_path);
     let _ = fs::remove_dir(test_dir);
 }
+
+fn app_without_devices() -> TraceXApp {
+    TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())))
+}
+
+struct EndingStream {
+    bytes: Option<Vec<u8>>,
+    command_after_read: Option<Sender<Vec<u8>>>,
+    stop_after_read: Option<Arc<Mutex<bool>>>,
+}
+
+impl Read for EndingStream {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let Some(bytes) = self.bytes.take() else {
+            return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        };
+        output[..bytes.len()].copy_from_slice(&bytes);
+        if let Some(sender) = self.command_after_read.take() {
+            sender.send(b"command".to_vec()).unwrap();
+        }
+        if let Some(stop) = &self.stop_after_read {
+            *stop.lock().unwrap() = true;
+        }
+        Ok(bytes.len())
+    }
+}
+
+impl IoWrite for EndingStream {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn transport_failure_drains_complete_lines_and_final_tail_before_cleanup() {
+    let mut app = app_without_devices();
+    let (log_tx, log_rx) = channel();
+    let (_command_tx, command_rx) = channel();
+    app.log_rx = Some(log_rx);
+    app.connected = true;
+    TraceXApp::serial_thread(
+        EndingStream {
+            bytes: Some(b"first\n\nfinal tail".to_vec()),
+            command_after_read: None,
+            stop_after_read: None,
+        },
+        log_tx,
+        command_rx,
+        Arc::new(Mutex::new(false)),
+    );
+
+    app.poll();
+
+    assert_eq!(
+        app.logs
+            .iter()
+            .map(|entry| entry.raw.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "", "final tail"]
+    );
+    assert!(!app.connected);
+    assert!(app.log_rx.is_none());
+}
+
+#[test]
+fn manual_disconnect_retains_receiver_until_worker_finishes_and_blocks_connect() {
+    let mut app = app_without_devices();
+    let (log_tx, log_rx) = channel();
+    let stop = Arc::new(Mutex::new(false));
+    app.log_rx = Some(log_rx);
+    app.stop_flag = Some(Arc::clone(&stop));
+    app.connected = true;
+    app.last_connected_port = Some("test port".to_owned());
+    log_tx.send("queued".to_owned()).unwrap();
+
+    app.disconnect();
+    assert!(*stop.lock().unwrap());
+    assert!(app.last_connected_port.is_none());
+    assert!(app.log_rx.is_some());
+    app.connect();
+    assert!(
+        app.operation_error
+            .as_deref()
+            .unwrap()
+            .contains("finish disconnecting")
+    );
+    app.poll();
+    assert_eq!(app.logs[0].raw, "queued");
+    assert!(app.log_rx.is_some());
+
+    log_tx.send("final tail".to_owned()).unwrap();
+    drop(log_tx);
+    app.poll();
+    assert_eq!(app.logs[1].raw, "final tail");
+    assert!(app.log_rx.is_none());
+    assert!(app.stop_flag.is_none());
+}
+
+#[test]
+fn command_write_failure_flushes_previously_read_tail() {
+    let (log_tx, log_rx) = channel();
+    let (command_tx, command_rx) = channel();
+    TraceXApp::serial_thread(
+        EndingStream {
+            bytes: Some(b"tail before failed command".to_vec()),
+            command_after_read: Some(command_tx),
+            stop_after_read: None,
+        },
+        log_tx,
+        command_rx,
+        Arc::new(Mutex::new(false)),
+    );
+    assert_eq!(log_rx.try_recv().unwrap(), "tail before failed command");
+    assert_eq!(log_rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+fn worker_stop_flushes_previously_read_tail() {
+    let (log_tx, log_rx) = channel();
+    let (_command_tx, command_rx) = channel();
+    let stop = Arc::new(Mutex::new(false));
+    TraceXApp::serial_thread(
+        EndingStream {
+            bytes: Some(b"tail before stop".to_vec()),
+            command_after_read: None,
+            stop_after_read: Some(Arc::clone(&stop)),
+        },
+        log_tx,
+        command_rx,
+        stop,
+    );
+    assert_eq!(log_rx.try_recv().unwrap(), "tail before stop");
+    assert_eq!(log_rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+fn poll_until(app: &mut TraceXApp, mut ready: impl FnMut(&TraceXApp) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !ready(app) {
+        assert!(
+            Instant::now() < deadline,
+            "application did not reach expected state"
+        );
+        app.poll();
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn manual_disconnect_saves_final_queued_records_before_closing_autosave() {
+    let mut app = app_without_devices();
+    let directory =
+        std::env::temp_dir().join(format!("tracex-disconnect-save-{}", std::process::id()));
+    app.auto_save_path = Some(directory.join("TraceX.log"));
+    app.auto_save_enabled = true;
+    app.apply_auto_save_enabled_change();
+    poll_until(&mut app, |app| app.auto_save_current_path.is_some());
+    let path = app.auto_save_current_path.clone().unwrap();
+    let (sender, receiver) = channel();
+    app.log_rx = Some(receiver);
+    app.connected = true;
+
+    app.disconnect();
+    assert!(app.auto_save.active);
+    sender.send("final saved tail".to_owned()).unwrap();
+    drop(sender);
+    poll_until(&mut app, |app| {
+        app.log_rx.is_none() && !app.auto_save.active && !app.auto_save.stopping
+    });
+
+    let saved = fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("final saved tail"));
+    fs::remove_file(path).unwrap();
+    fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn export_and_main_view_share_trimmed_raw_matching_and_severity() {
+    let mut app = app_without_devices();
+    let mut raw_match = LogEntry::new(21, "hidden raw needle".into(), "12:00:00");
+    raw_match.message = "parsed body".into();
+    raw_match.level = LogLevel::Info;
+    let mut severity_hidden = raw_match.clone();
+    severity_hidden.id = 22;
+    severity_hidden.level = LogLevel::Warn;
+    app.logs = vec![raw_match, severity_hidden];
+    app.search = "  NeEdLe \t".into();
+    app.show_warn = false;
+    app.filter_exclude = true;
+
+    assert_eq!(app.query_indices(QueryScope::Main), [0]);
+    assert_eq!(app.export_text(), "[12:00:00] [INF] parsed body");
+    app.filter_exclude = false;
+    assert_eq!(app.export_text(), "[12:00:00] [INF] parsed body");
+    app.search = " \t\n".into();
+    assert_eq!(app.export_text(), "[12:00:00] [INF] parsed body");
+    app.show_info = false;
+    assert!(app.export_text().is_empty());
+}

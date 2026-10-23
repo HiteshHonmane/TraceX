@@ -32,7 +32,9 @@ deleted.
 
 ## Current Platform Status
 
-- Windows 10 or later is the currently validated desktop target.
+- The development preview targets Windows x86_64. Builds and automated checks
+  have been run on Windows 11; physical-device and broader OS qualification
+  remain in progress.
 - Linux and macOS remain first-class architectural targets and will be added to
   the verification matrix as packaging work matures.
 
@@ -53,6 +55,10 @@ The Windows executable will be in `target/release/tracex.exe`.
 - [AI task prompts](doc/prompts/README.md)
 - [Contributor guide](CONTRIBUTING.md)
 - [Engineering decisions](DECISIONS.md)
+- [UART framing and disconnect behavior](doc/UART-FRAMING.md)
+- [Query behavior](doc/QUERY-BEHAVIOR.md)
+- [Development preview packaging](doc/DEVELOPMENT-PREVIEW.md)
+- [Asynchronous autosave behavior](doc/engineering/AUTOSAVE-WORKER.md)
 
 AI contributors must begin with [AGENTS.md](AGENTS.md).
 
@@ -85,7 +91,12 @@ cargo build --release
 
 ## License
 
-A project license will be selected before the first public production release.
+Distributed development-preview binaries use the
+[TraceX binary license](distribution/BINARY-LICENSE.txt), which permits free
+personal and internal business use. Third-party components retain their own
+licenses; notices and relevant source archives accompany public preview packages.
+This binary grant does not license the TraceX source code. A source-code license
+and commercial production terms have not been selected.
 
 ---
 
