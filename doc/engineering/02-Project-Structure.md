@@ -10,18 +10,19 @@ domain behavior while `src/app/` temporarily contains UI, storage, theme, and
 application orchestration modules. Treat this as a working migration baseline,
 not as the final architecture described in `doc/02-System-Architecture.md`.
 
-The native application shell owns port discovery and shared-view tabs. Its one
-[`SessionRuntime`](../../src/app/session.rs) owns capture, retained history,
-command drafts, investigation state and the private query/archive/autosave/close
-controllers. Connection and polling methods live in
-[`session_capture.rs`](../../src/app/session_capture.rs). Rendering, clipboard
-delivery and native file dialogs borrow the runtime from `app/ui/`; application
-methods recheck admission and perform storage work through workers. Runtime
-modules do not depend on egui or native file dialogs. This is the first ownership
-extraction in [Decision 007](../../DECISIONS.md#decision-007-explicit-session-ownership-and-bounded-workspace),
-not an independent-session workspace: visible monitor tabs still share that one
-runtime. The next stage must add stable identities and aggregate close before
-exposing a second owner.
+The native application shell owns port discovery, a bounded asynchronous file
+picker and a [`Workspace`](../../src/app/workspace.rs). The workspace routes
+addressed actions and retains up to two independent
+[`SessionRuntime`](../../src/app/session.rs) owners. Each runtime owns capture,
+retained history, command drafts, investigation state and private
+query/archive/autosave/close controllers. Connection and polling methods live in
+[`session_capture.rs`](../../src/app/session_capture.rs); aggregate and tab close
+coordination lives in [`workspace_close.rs`](../../src/app/workspace_close.rs).
+Rendering borrows a specific owner and returns addressed intents. Picker
+completion retains its original session ID, and application methods recheck
+admission before storage work. Runtime/workspace modules do not depend on egui
+or native dialogs. See the [workspace contract](WORKSPACE.md) and
+[Decision 007](../../DECISIONS.md#decision-007-explicit-session-ownership-and-bounded-workspace).
 
 Do not perform a full workspace migration as incidental cleanup. Each extraction
 must preserve behavior, have tests, and establish a real dependency boundary.

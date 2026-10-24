@@ -32,6 +32,7 @@ pub(super) struct ShutdownSnapshot {
     pub capture_drained: bool,
     pub autosave_complete: bool,
     pub archive_complete: bool,
+    pub query_complete: bool,
     pub unsaved_history: bool,
     pub failure: Option<String>,
 }
@@ -76,6 +77,9 @@ impl ShutdownCoordinator {
         }
     }
 
+    // Only a state-machine fixture bypasses this coordinator; product force exit
+    // is a generation-validated whole-window Workspace action.
+    #[cfg(test)]
     pub(super) fn force_close(&mut self) {
         self.phase = Phase::Ready;
     }
@@ -101,7 +105,7 @@ impl ShutdownCoordinator {
             .started
             .is_some_and(|started| now.saturating_duration_since(started) >= SHUTDOWN_DEADLINE)
         {
-            self.phase = Phase::Decision("Shutdown is incomplete: capture or storage has not finished within 10 seconds. Pending logs may remain unsaved.".to_owned());
+            self.phase = Phase::Decision("Shutdown is incomplete: capture, search or storage has not finished within 10 seconds. Pending logs may remain unsaved.".to_owned());
             return ShutdownAction::Wait;
         }
         match self.phase {
@@ -109,7 +113,11 @@ impl ShutdownCoordinator {
                 self.phase = Phase::Finishing;
                 ShutdownAction::FinishAutosave
             }
-            Phase::Finishing if snapshot.autosave_complete && snapshot.archive_complete => {
+            Phase::Finishing
+                if snapshot.autosave_complete
+                    && snapshot.archive_complete
+                    && snapshot.query_complete =>
+            {
                 if snapshot.unsaved_history {
                     self.phase = Phase::UnsavedSession;
                     ShutdownAction::Wait
@@ -126,6 +134,7 @@ impl ShutdownCoordinator {
 impl super::session::SessionRuntime {
     pub(super) fn request_shutdown(&mut self, now: Instant) {
         if self.shutdown.request(now) {
+            self.query_view.request_stop();
             self.disconnect();
         }
     }
@@ -144,12 +153,14 @@ impl super::session::SessionRuntime {
         }
         failures.extend(self.auto_save_shutdown_failure());
         failures.extend(self.session_archive_shutdown_failure());
+        let query_complete = self.query_view.shutdown_complete();
         let action = self.shutdown.advance(
             now,
             ShutdownSnapshot {
                 capture_drained: self.capture.is_none(),
                 autosave_complete: self.auto_save_shutdown_complete(),
                 archive_complete: !self.session_archive_busy(),
+                query_complete,
                 unsaved_history: self.history_dirty && !self.logs.is_empty(),
                 failure: (!failures.is_empty()).then(|| failures.join("\n\n")),
             },
@@ -172,6 +183,7 @@ mod tests {
             capture_drained,
             autosave_complete,
             archive_complete: true,
+            query_complete: true,
             unsaved_history: false,
             failure: None,
         }

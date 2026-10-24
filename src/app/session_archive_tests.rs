@@ -56,11 +56,17 @@ fn save_and_open_roundtrip_restore_original_records_and_next_id() {
     assert!(app.session_archive_shutdown_failure().is_none());
     assert!(!app.history_dirty);
     app.logs.clear();
+    let original_title = app.title.clone();
     app.open_session_from(path.clone());
     complete(&mut app);
     assert_eq!(app.logs[0].raw, "raw 🦀");
     assert_eq!(app.logs[0].timestamp, "original time");
     assert_eq!(app.next_id, 20);
+    assert_eq!(app.title, original_title);
+    assert_eq!(app.source_path, Some(path.clone()));
+    app.clear();
+    assert!(app.source_path.is_none());
+    assert_eq!(app.title, original_title);
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(directory).unwrap();
 }
@@ -72,14 +78,20 @@ fn existing_target_is_never_overwritten_and_original_history_returns() {
     let mut app = app();
     app.logs = records();
     app.history_dirty = true;
+    app.source_path = Some(directory.join("previous-source.tracex"));
+    let original_source = app.source_path.clone();
     let pointer = app.logs.as_ptr();
     let shared_record = Arc::clone(&app.logs[0]);
     app.save_session_to(path.clone());
+    assert!(app.session_archive_busy());
+    app.clear();
+    assert_eq!(app.source_path, original_source);
     complete(&mut app);
     assert_eq!(app.logs.as_ptr(), pointer);
     assert!(Arc::ptr_eq(&app.logs[0], &shared_record));
     assert!(app.session_archive_shutdown_failure().is_some());
     assert!(app.history_dirty);
+    assert_eq!(app.source_path, original_source);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep me");
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(directory).unwrap();
@@ -95,6 +107,8 @@ fn corrupted_or_truncated_open_preserves_current_history_and_selection() {
     let mut app = app();
     app.logs = records();
     app.selected.insert(19);
+    app.source_path = Some(directory.join("previous-source.tracex"));
+    let original_source = app.source_path.clone();
     app.open_session_from(path.clone());
     assert!(!app.session_archive_busy());
     assert_eq!(app.logs[0].id, 19);
@@ -105,6 +119,7 @@ fn corrupted_or_truncated_open_preserves_current_history_and_selection() {
     complete(&mut app);
     assert!(app.logs.is_empty());
     assert!(app.session_archive_shutdown_failure().is_some());
+    assert_eq!(app.source_path, original_source);
     std::fs::remove_file(path).unwrap();
     std::fs::remove_dir(directory).unwrap();
 }

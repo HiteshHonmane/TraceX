@@ -8,6 +8,11 @@ records and 64 MiB of conservatively accounted retained allocations. These are
 protective configuration defaults, not measured capacity or throughput promises.
 Tests inject smaller limits; production defaults remain centralized in the type.
 
+The limits apply independently to each retained session. Workspace admits at most
+two owners including closing ones, bounding this history accounting to 128 MiB
+across those owners, with separate query/queue/UI overhead. Capacity failure in
+one owner does not block the other's ingestion. See [workspace](WORKSPACE.md).
+
 Admission checks happen before a record is removed from the capture inbox. The
 preflight reserves raw string capacity, up to the raw length for each parsed
 message and tag, 64 bytes for the current timestamp, and four times the size of

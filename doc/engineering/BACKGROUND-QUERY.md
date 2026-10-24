@@ -7,6 +7,13 @@ These costs grew with the session while the user was merely scrolling or typing.
 
 ## Ownership and execution
 
+Each independent session owns its own query controller and worker. Workspace
+polls inactive completions but prepares fresh snapshots only for the active
+session. Completion rejects an invalidated key immediately, even before a later
+refresh increments generation. Closing owners cancel their worker and retain
+their cap slot until actual thread completion; Keep open permits fresh querying
+after cancellation without changing search text. See [workspace](WORKSPACE.md).
+
 History now contains immutable `Arc<LogEntry>` records (`SharedLog`). Capture parses
 one record and wraps it once. Session save/export still moves and returns the same
 history vector; reopen wraps each decoded record once. No query snapshot clones

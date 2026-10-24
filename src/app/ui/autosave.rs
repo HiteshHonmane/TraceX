@@ -1,6 +1,12 @@
 use super::super::*;
+use super::actions::{FileAction, SessionUi, UiIntent};
 
-pub(super) fn render_auto_save_status(session: &mut SessionRuntime, ui: &mut egui::Ui) {
+pub(super) fn render_auto_save_status(
+    session: &mut SessionRuntime,
+    meta: &SessionUi,
+    intents: &mut Vec<UiIntent>,
+    ui: &mut egui::Ui,
+) {
     if let Some(error) = &session.auto_save_error {
         ui.label(
             RichText::new(error)
@@ -42,10 +48,15 @@ pub(super) fn render_auto_save_status(session: &mut SessionRuntime, ui: &mut egu
                 .color(theme::TEXT_MUTED),
         );
     }
-    render_recovery_export(session, ui);
+    render_recovery_export(session, meta, intents, ui);
 }
 
-fn render_recovery_export(session: &mut SessionRuntime, ui: &mut egui::Ui) {
+fn render_recovery_export(
+    session: &mut SessionRuntime,
+    meta: &SessionUi,
+    intents: &mut Vec<UiIntent>,
+    ui: &mut egui::Ui,
+) {
     let count = session.unsaved_payload_count();
     if count == 0 {
         return;
@@ -53,20 +64,21 @@ fn render_recovery_export(session: &mut SessionRuntime, ui: &mut egui::Ui) {
     ui.label(format!("{count} unsaved payloads retained"));
     if ui
         .add_enabled(
-            !session.recovery_exporting(),
+            meta.can_edit && !session.recovery_exporting(),
             egui::Button::new("Export unsaved payloads"),
         )
         .clicked()
-        && let Some(path) = rfd::FileDialog::new()
-            .add_filter("Recovery JSON", &["json"])
-            .set_file_name("TraceX-recovery.json")
-            .save_file()
     {
-        session.export_recovery_to(path);
+        intents.push(UiIntent::File(meta.id, FileAction::Recovery));
     }
 }
 
-pub(super) fn render_settings(session: &mut SessionRuntime, ui: &mut egui::Ui) {
+pub(super) fn render_settings(
+    session: &mut SessionRuntime,
+    meta: &SessionUi,
+    intents: &mut Vec<UiIntent>,
+    ui: &mut egui::Ui,
+) {
     ui.label(
         RichText::new("LOG FILES")
             .size(10.0)
@@ -85,29 +97,15 @@ pub(super) fn render_settings(session: &mut SessionRuntime, ui: &mut egui::Ui) {
             )
             .changed()
         {
-            session.set_auto_save_limit_mb(limit);
+            intents.push(UiIntent::AutosaveLimit(meta.id, limit));
         }
     });
     ui.add_space(4.0);
     if ui.button("Choose save location").clicked() {
-        choose_save_path(session);
+        choose_save_path(session, meta, intents);
     }
 }
 
-fn choose_save_path(session: &mut SessionRuntime) {
-    if !session.auto_save_path_ready() {
-        return;
-    }
-    let default_name = session
-        .auto_save_path
-        .as_ref()
-        .and_then(|path| path.file_name().and_then(|name| name.to_str()))
-        .unwrap_or("TraceX.log");
-    if let Some(path) = rfd::FileDialog::new()
-        .add_filter("Log", &["log", "txt"])
-        .set_file_name(default_name)
-        .save_file()
-    {
-        session.set_auto_save_path(path);
-    }
+fn choose_save_path(_session: &mut SessionRuntime, meta: &SessionUi, intents: &mut Vec<UiIntent>) {
+    intents.push(UiIntent::File(meta.id, FileAction::AutosavePath));
 }

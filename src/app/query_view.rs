@@ -13,6 +13,7 @@ pub(super) struct QueryView {
     pending: bool,
     snapshot: Option<Arc<QueryResult>>,
     failure: Option<String>,
+    stopping: bool,
 }
 
 impl QueryView {
@@ -38,7 +39,68 @@ impl QueryView {
         }
     }
 
+    /// Cancel and retain the worker until its thread actually releases snapshots.
+    pub(super) fn request_stop(&mut self) {
+        self.stopping = true;
+        self.invalidate();
+        if let Some(worker) = &self.worker {
+            worker.stop();
+        }
+    }
+
+    pub(super) fn shutdown_complete(&mut self) -> bool {
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            return false;
+        }
+        if self.stopping {
+            self.worker = None;
+            self.snapshot = None;
+            self.pending = false;
+            self.key = None;
+            self.requested_len = 0;
+        }
+        true
+    }
+
+    fn poll_completed(&mut self, record_count: usize) {
+        if self.stopping {
+            self.shutdown_complete();
+            return;
+        }
+        if let Some(worker) = &self.worker {
+            match worker.poll() {
+                QueryPoll::Ready(result)
+                    if result.generation == self.generation
+                        && result.record_count <= record_count
+                        && self.key.is_some()
+                        && self.failure.is_none() =>
+                {
+                    self.snapshot = Some(Arc::new(result));
+                    self.pending = false;
+                }
+                QueryPoll::Stopped(reason) => {
+                    self.pending = false;
+                    self.failure = Some(format!(
+                        "Background search stopped: {reason:?}. Change the query to retry; captured logs are retained."
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn refresh(&mut self, records: &[SharedLog], query: LogQuery) {
+        if self.stopping && !self.shutdown_complete() {
+            return;
+        }
+        if self.stopping {
+            self.stopping = false;
+            self.failure = None;
+        }
         let changed = self.key.as_ref() != Some(&query) || records.len() < self.requested_len;
         if changed {
             self.snapshot = None;
@@ -59,24 +121,7 @@ impl QueryView {
         if self.failure.is_some() {
             return;
         }
-        if let Some(worker) = &self.worker {
-            match worker.poll() {
-                QueryPoll::Ready(result)
-                    if result.generation == self.generation
-                        && result.record_count <= records.len() =>
-                {
-                    self.snapshot = Some(Arc::new(result));
-                    self.pending = false;
-                }
-                QueryPoll::Stopped(reason) => {
-                    self.pending = false;
-                    self.failure = Some(format!(
-                        "Background search stopped: {reason:?}. Change the query to retry; captured logs are retained."
-                    ));
-                }
-                _ => {}
-            }
-        }
+        self.poll_completed(records.len());
         if self.failure.is_some()
             || self.pending
             || self
@@ -135,10 +180,32 @@ impl QueryView {
             }
         }
     }
+    #[cfg(test)]
+    pub(super) fn install_test_worker(&mut self, worker: QueryWorker) {
+        self.worker = Some(worker);
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_result_waiting(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(QueryWorker::result_waiting)
+    }
 }
 
 impl SessionRuntime {
+    pub(super) fn poll_query_completion(&mut self) {
+        if self.session_archive_busy() {
+            self.query_view.invalidate();
+        }
+        self.query_view.poll_completed(self.logs.len());
+    }
+
     pub(super) fn refresh_query_view(&mut self) {
+        if self.shutdown.active() {
+            self.query_view.shutdown_complete();
+            return;
+        }
         if self.session_archive_busy() {
             self.query_view.invalidate();
             return;

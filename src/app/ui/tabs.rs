@@ -1,113 +1,207 @@
 use super::super::*;
+use super::actions::{UiIntent, widget_id};
 
-impl TraceXApp {
-    pub(super) fn render_tabs(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("tabs")
-            .exact_height(TOP_HEADER_HEIGHT)
-            .frame(
-                egui::Frame::none()
-                    .fill(Color32::from_gray(31))
-                    .stroke(Stroke::new(1.0_f32, theme::BORDER)),
-            )
-            .show(ctx, |ui| {
-                const TAB_HEIGHT: f32 = 36.0;
-                ui.add_space(TOP_HEADER_HEIGHT - TAB_HEIGHT);
-                ui.horizontal(|ui| {
-                    let tabs: Vec<_> = self
-                        .ui_tabs
-                        .iter()
-                        .enumerate()
-                        .map(|(index, tab)| (index, tab.title.clone()))
-                        .collect();
-                    let mut close_tab = None;
-
-                    for (index, title) in tabs {
-                        let active = self.active_tab == index;
-                        ui.push_id(("monitor_tab", index), |ui| {
-                            let (rect, response) = ui.allocate_exact_size(
-                                Vec2::new(132.0, TAB_HEIGHT),
-                                egui::Sense::click(),
-                            );
-                            let fill = if active {
-                                theme::BG_DARK
-                            } else if response.hovered() {
-                                theme::BG_HOVER
-                            } else {
-                                Color32::TRANSPARENT
-                            };
-                            let stroke = if active {
+pub(super) fn render_tabs(workspace: &Workspace, ctx: &egui::Context, intents: &mut Vec<UiIntent>) {
+    egui::TopBottomPanel::top("tabs")
+        .exact_height(TOP_HEADER_HEIGHT)
+        .frame(
+            egui::Frame::none()
+                .fill(Color32::from_gray(31))
+                .stroke(Stroke::new(1.0_f32, theme::BORDER)),
+        )
+        .show(ctx, |ui| {
+            ui.add_space(TOP_HEADER_HEIGHT - 36.0);
+            ui.horizontal(|ui| {
+                for session in workspace.sessions() {
+                    let active = workspace.active_session_id() == session.id;
+                    let closing = workspace.close_target(session.id).is_some();
+                    let state = if closing {
+                        "Closing"
+                    } else if session.connected {
+                        "Live"
+                    } else if session.capture.is_some() {
+                        "Draining"
+                    } else if session.source_path.is_some() {
+                        "Saved session · disconnected"
+                    } else {
+                        "Disconnected"
+                    };
+                    let details = format!(
+                        "{} · {}{}{}",
+                        session.title,
+                        state,
+                        if session.history_dirty {
+                            " · Unsaved retained history"
+                        } else {
+                            ""
+                        },
+                        session
+                            .occupied_endpoint
+                            .as_ref()
+                            .or_else(|| (!session.selected_port.is_empty())
+                                .then_some(&session.selected_port))
+                            .map_or(String::new(), |port| format!(" · {port}"))
+                    );
+                    let details = format!(
+                        "{details}{}{}",
+                        session
+                            .source_path
+                            .as_ref()
+                            .map_or(String::new(), |p| format!(" · {}", p.display())),
+                        session
+                            .operation_error
+                            .as_ref()
+                            .or(session.capture_error.as_ref())
+                            .map_or(String::new(), |error| format!(" · {error}"))
+                    );
+                    ui.push_id(widget_id(session.id, "tab"), |ui| {
+                        let (rect, response) =
+                            ui.allocate_exact_size(Vec2::new(132.0, 36.0), egui::Sense::click());
+                        let fill = if active {
+                            theme::BG_DARK
+                        } else if response.hovered() {
+                            theme::BG_HOVER
+                        } else {
+                            Color32::TRANSPARENT
+                        };
+                        ui.painter().rect(
+                            rect,
+                            egui::Rounding {
+                                nw: 6.0,
+                                ne: 6.0,
+                                sw: 0.0,
+                                se: 0.0,
+                            },
+                            fill,
+                            if active || response.has_focus() {
                                 Stroke::new(1.0_f32, theme::BORDER)
                             } else {
                                 Stroke::NONE
-                            };
-                            ui.painter().rect(
-                                rect,
-                                egui::Rounding {
-                                    nw: 6.0,
-                                    ne: 6.0,
-                                    sw: 0.0,
-                                    se: 0.0,
-                                },
-                                fill,
-                                stroke,
+                            },
+                        );
+                        let color = if closing {
+                            theme::WARNING
+                        } else if session.capture_error.is_some()
+                            || session.operation_error.is_some()
+                        {
+                            theme::ERROR
+                        } else if session.connected {
+                            theme::SUCCESS
+                        } else {
+                            theme::TEXT_MUTED
+                        };
+                        let cue = egui::pos2(rect.left() + 8.0, rect.center().y);
+                        if closing {
+                            super::icons::paint(
+                                ui,
+                                egui::Rect::from_center_size(cue, Vec2::splat(10.0)),
+                                super::icons::Icon::Follow,
+                                color,
                             );
-                            ui.painter().text(
-                                egui::pos2(rect.left() + 20.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                title,
-                                if active { theme::bold_font(14.0) } else { FontId::proportional(14.0) },
-                                if active { Color32::WHITE } else { theme::TEXT_DIM },
-                            );
-                            if active || response.hovered() {
-                                super::icons::paint(ui, egui::Rect::from_center_size(egui::pos2(rect.right() - 18.0, rect.center().y), Vec2::splat(12.0)), super::icons::Icon::Close, theme::TEXT_MUTED);
-                            }
-
-                            let response = response.on_hover_text("Monitor views share the current device capture and command destination.");
-                            if response.clicked() {
-                                let over_close = response
-                                    .interact_pointer_pos()
-                                    .map(|position| position.x >= rect.right() - 34.0)
-                                    .unwrap_or(false);
-                                if over_close {
-                                    close_tab = Some(index);
-                                } else {
-                                    self.active_tab = index;
-                                }
-                            }
-                        });
-                    }
-
-                    if let Some(index) = close_tab {
-                        self.ui_tabs.remove(index);
-                        if self.ui_tabs.is_empty() {
-                            self.ui_tabs.push(UiTab {
-                                title: "Monitor 1".to_string(),
-                                setup: false,
-                            });
-                            self.active_tab = 0;
-                        } else if index < self.active_tab {
-                            self.active_tab -= 1;
-                        } else if index == self.active_tab {
-                            self.active_tab = index.min(self.ui_tabs.len() - 1);
+                        } else if session.connected {
+                            ui.painter().circle_filled(cue, 2.5, color);
+                        } else {
+                            ui.painter()
+                                .circle_stroke(cue, 2.5, Stroke::new(1.0_f32, color));
                         }
-                    }
-
-                    if super::icons::button(ui, super::icons::Icon::Plus, "Open a monitor view (shared capture)", Vec2::new(36.0, 36.0), false).clicked()
-                    {
-                        let number = self.ui_tabs.len() + 1;
-                        self.ui_tabs.push(UiTab {
-                            title: format!("Monitor {number}"),
-                            setup: true,
+                        let title = format!(
+                            "{}{}",
+                            session.title,
+                            if session.history_dirty { " *" } else { "" }
+                        );
+                        let clip = egui::Rect::from_min_max(
+                            rect.left_top(),
+                            egui::pos2(rect.right() - 30.0, rect.bottom()),
+                        );
+                        ui.painter().with_clip_rect(clip).text(
+                            egui::pos2(rect.left() + 16.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            title,
+                            if active {
+                                theme::bold_font(14.0)
+                            } else {
+                                FontId::proportional(14.0)
+                            },
+                            if active {
+                                Color32::WHITE
+                            } else {
+                                theme::TEXT_DIM
+                            },
+                        );
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::SelectableLabel,
+                                ui.is_enabled(),
+                                active,
+                                &details,
+                            )
                         });
-                        self.active_tab = self.ui_tabs.len() - 1;
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(14.0);
-                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), egui::Sense::hover());
-                        super::icons::paint(ui, rect.shrink(2.0), super::icons::Icon::Profile, theme::TEXT_DIM);
+                        let close_rect = egui::Rect::from_min_size(
+                            egui::pos2(rect.right() - 28.0, rect.top()),
+                            Vec2::new(28.0, rect.height()),
+                        );
+                        let close = ui.interact(
+                            close_rect,
+                            widget_id(session.id, "tab_close"),
+                            egui::Sense::click(),
+                        );
+                        close.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                !closing,
+                                format!("Close {}", session.title),
+                            )
+                        });
+                        if active || response.hovered() || closing {
+                            super::icons::paint(
+                                ui,
+                                egui::Rect::from_center_size(
+                                    close_rect.center(),
+                                    Vec2::splat(12.0),
+                                ),
+                                super::icons::Icon::Close,
+                                theme::TEXT_MUTED,
+                            );
+                        }
+                        if close
+                            .on_hover_text(format!("Request safe close of {}", session.title))
+                            .clicked()
+                            && !closing
+                        {
+                            intents.push(UiIntent::CloseSession(session.id));
+                        } else if response.on_hover_text(&details).clicked() {
+                            intents.push(UiIntent::Select(session.id));
+                        }
                     });
+                }
+                let plus = ui.add_enabled_ui(workspace.can_create_session(), |ui| {
+                    super::icons::button(
+                        ui,
+                        super::icons::Icon::Plus,
+                        "Create independent monitor session",
+                        Vec2::new(36.0, 36.0),
+                        false,
+                    )
+                });
+                if plus
+                    .inner
+                    .on_disabled_hover_text(
+                        "Two-session preview limit reached; close a session first",
+                    )
+                    .clicked()
+                {
+                    intents.push(UiIntent::Create);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(14.0);
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), egui::Sense::hover());
+                    super::icons::paint(
+                        ui,
+                        rect.shrink(2.0),
+                        super::icons::Icon::Profile,
+                        theme::TEXT_DIM,
+                    );
                 });
             });
-    }
+        });
 }

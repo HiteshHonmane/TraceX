@@ -59,7 +59,9 @@ mod query_worker;
 mod session;
 mod session_archive;
 mod session_capture;
+mod workspace;
 use session::SessionRuntime;
+use workspace::*;
 mod shutdown;
 mod storage;
 
@@ -229,17 +231,11 @@ pub fn run() -> eframe::Result<()> {
     )
 }
 
-struct UiTab {
-    title: String,
-    setup: bool,
-}
-
 struct TraceXApp {
     // A single shared port catalog belongs to the native application shell.
     ports: Arc<Mutex<Vec<(String, String)>>>,
-    session: SessionRuntime,
-    ui_tabs: Vec<UiTab>,
-    active_tab: usize,
+    workspace: Workspace,
+    dialogs: ui::file_dialog::FileDialogs,
 }
 
 impl TraceXApp {
@@ -269,12 +265,8 @@ impl TraceXApp {
     fn with_ports(ports: Arc<Mutex<Vec<(String, String)>>>) -> Self {
         Self {
             ports,
-            session: SessionRuntime::new(),
-            ui_tabs: vec![UiTab {
-                title: "Monitor 1".to_owned(),
-                setup: false,
-            }],
-            active_tab: 0,
+            workspace: Workspace::new(),
+            dialogs: ui::file_dialog::FileDialogs::default(),
         }
     }
 

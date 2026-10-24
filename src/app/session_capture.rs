@@ -1,11 +1,13 @@
 //! Connection and ordered capture polling for one session runtime.
 use super::capture;
 use super::session::SessionRuntime;
+use super::workspace::ConnectionId;
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 impl SessionRuntime {
-    pub(super) fn connect(&mut self) {
+    pub(super) fn connection_ready(&mut self) -> bool {
         if self.capture.is_some()
             || self.auto_save.stopping
             || self.shutdown.active()
@@ -14,11 +16,24 @@ impl SessionRuntime {
         {
             self.operation_error =
                 Some("Wait for the previous connection to finish disconnecting.".to_owned());
-            return;
+            return false;
         }
         if self.selected_port.is_empty() {
             self.operation_error = Some("Select a serial port before connecting.".to_owned());
-            return;
+            return false;
+        }
+        if self.next_connection_id.is_none() {
+            self.operation_error = Some(
+                "Connection identifiers exhausted; save this session and restart TraceX.".into(),
+            );
+            return false;
+        }
+        true
+    }
+
+    pub(super) fn connect(&mut self) -> bool {
+        if !self.connection_ready() {
+            return false;
         }
 
         let port = match serialport::new(&self.selected_port, self.baud_rate)
@@ -28,10 +43,20 @@ impl SessionRuntime {
             Ok(p) => p,
             Err(error) => {
                 self.operation_error = Some(format!("Could not connect to serial port: {error}"));
-                return;
+                return false;
             }
         };
+        self.start_capture(port)
+    }
 
+    /// Publish identity/endpoint only after the real capture worker starts.
+    pub(super) fn start_capture(&mut self, port: impl Read + Write + Send + 'static) -> bool {
+        if !self.connection_ready() {
+            return false;
+        }
+        let Some(generation) = self.next_connection_id else {
+            return false;
+        };
         let stop = Arc::new(Mutex::new(false));
         let (inbox, commands) = match capture::start_reader(
             port,
@@ -42,13 +67,16 @@ impl SessionRuntime {
             Ok(reader) => reader,
             Err(error) => {
                 self.operation_error = Some(format!("Could not start capture: {error}"));
-                return;
+                return false;
             }
         };
         self.capture = Some(inbox);
         self.serial_tx = Some(commands);
         self.stop_flag = Some(stop);
         self.capture_error = None;
+        self.connection_id = Some(ConnectionId(generation));
+        self.next_connection_id = generation.checked_add(1);
+        self.occupied_endpoint = Some(self.selected_port.clone());
 
         self.connected = true;
         self.operation_error = None;
@@ -57,6 +85,7 @@ impl SessionRuntime {
         if self.auto_save_enabled && !self.auto_save.active {
             self.open_new_auto_save_file();
         }
+        true
     }
 
     pub(super) fn disconnect(&mut self) {
@@ -72,7 +101,13 @@ impl SessionRuntime {
         self.last_connected_port = None;
     }
 
+    #[cfg(test)]
     pub(super) fn poll(&mut self) {
+        self.poll_with_budget(super::workspace::FRAME_RECORD_BUDGET);
+    }
+
+    pub(super) fn poll_with_budget(&mut self, record_budget: usize) -> usize {
+        let mut admitted = 0;
         self.poll_session_archive();
         self.poll_auto_save();
         if self.auto_save_enabled && self.auto_save_error.is_some() && self.capture.is_some() {
@@ -80,7 +115,7 @@ impl SessionRuntime {
         }
         self.poll_capture_status();
         // A record remains in its bounded batch until history and storage accept it.
-        for _ in 0..256 {
+        for _ in 0..record_budget {
             if !self.can_ingest_log() || self.history_limit_reached || self.session_archive_busy() {
                 break;
             }
@@ -108,6 +143,7 @@ impl SessionRuntime {
                     .and_then(capture::CaptureInbox::pop_record)
                 {
                     self.record_log_line(record);
+                    admitted += 1;
                 }
             } else {
                 // Filling an empty inbox can discover sender loss or publish a
@@ -130,6 +166,7 @@ impl SessionRuntime {
             self.rate_count = 0;
             self.rate_timer = Instant::now();
         }
+        admitted
     }
 
     pub(super) fn handle_disconnection(&mut self) {
@@ -138,12 +175,18 @@ impl SessionRuntime {
         self.capture = None;
         self.serial_tx = None;
         self.stop_flag = None;
+        self.occupied_endpoint = None;
+        self.connection_id = None;
         self.stop_auto_save();
         // Reset reconnect cooldown
         self.reconnect_cooldown = Instant::now();
     }
 
-    pub(super) fn check_auto_reconnect(&mut self, available_ports: &[(String, String)]) {
+    pub(super) fn reconnect_eligible(
+        &self,
+        now: Instant,
+        available_ports: &[(String, String)],
+    ) -> bool {
         // Auto-reconnect if we were connected and the same port is available again
         // Add a small cooldown to avoid rapid reconnection attempts
         if !self.connected
@@ -153,7 +196,7 @@ impl SessionRuntime {
             && !self.session_archive_busy()
             && self.auto_save_error.is_none()
             && !self.auto_save.stopping
-            && self.reconnect_cooldown.elapsed() >= Duration::from_millis(500)
+            && now.saturating_duration_since(self.reconnect_cooldown) >= Duration::from_millis(500)
             && let Some(ref last_port) = self.last_connected_port
         {
             // Check if the port is available
@@ -162,10 +205,10 @@ impl SessionRuntime {
                 .any(|(_, port_name)| port_name == last_port);
 
             if port_available && self.selected_port == *last_port {
-                // Same port is available again, auto-reconnect
-                self.connect();
+                return true;
             }
         }
+        false
     }
 
     pub(super) fn poll_capture_status(&mut self) {

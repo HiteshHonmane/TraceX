@@ -1,10 +1,11 @@
 # Session runtime extraction
 
-Decision 007 is implemented in stages. This first increment moves the existing
-single live owner into [`SessionRuntime`](../../src/app/session.rs). The native
-shell owns the port catalog, startup/font preparation and shared-view tab labels;
-it owns exactly one runtime. Independent sessions, workspace admission, stable
-session/connection IDs and aggregate multi-owner closure are not enabled yet.
+Decision 007 first extracted [`SessionRuntime`](../../src/app/session.rs) without
+changing the shared-view behavior. The subsequent slice replaces that intermediate
+shell with [`Workspace`](../../src/app/workspace.rs), retaining up to two real
+independent runtimes including closing owners. The shell owns the port catalog,
+startup/font preparation, asynchronous UI picker controller and workspace. See
+the [workspace contract](WORKSPACE.md) for identity, polling and close rules.
 
 The runtime owns transport/inbox state, retained immutable records and admission
 budget, query controller and investigation state, archive handoff, autosave
@@ -30,9 +31,12 @@ when pending/finalizing work or restart refusal prevents changing the destinatio
 Accepted settings remain ordered with the existing worker commands.
 
 The shell supplies a read-only snapshot of discovered ports to
-`check_auto_reconnect`; the runtime no longer owns the shared discovery catalog.
+Workspace reconnect admission; the runtime no longer owns the shared discovery
+catalog or independently reopens a port.
 Serial opening remains synchronous with the same timeout and capture startup.
-The polling loop still admits at most 256 records per call for the sole runtime.
+Workspace assigns a frame-wide budget of at most 256 records, shared fairly
+with one bounded redistribution pass. Runtime polling accepts an explicit share;
+the zero-argument 256-record helper is test-only.
 No additional transport, worker queue, durable-storage guarantee or general
 message bus was introduced.
 
@@ -41,15 +45,16 @@ The [retention](HISTORY-RETENTION.md), [archive](SESSION-FORMAT.md),
 [close](CLOSE-LIFECYCLE.md) contracts retain their behavior. Save still snapshots
 only retained records while preserving a stopped pending inbox. Normal close
 still drains capture, waits for archive/autosave completion and obtains the
-dirty-history decision. Shared-view tab close still removes a view label rather
-than dropping the runtime. Replacing that behavior requires the later complete
-workspace lifecycle accepted in
-[Decision 007](../../DECISIONS.md#decision-007-explicit-session-ownership-and-bounded-workspace).
+dirty-history decision. Tab close now retains its runtime through capture, archive,
+autosave and query-worker completion plus its own dirty decision. It cannot
+force-drop an owner. Window close coordinates every runtime; explicit global
+force exit remains the exception. See [Decision 007](../../DECISIONS.md#decision-007-explicit-session-ownership-and-bounded-workspace).
 
 Existing core tests construct the real runtime directly. UI startup tests keep
 the actual shell/CreationContext font preparation path. QA's controlled two-owner
-characterizations demonstrate runtime ownership isolation, not a delivered
-multi-session UI. The integrated extraction passed formatting, warnings-denied
+characterizations demonstrate runtime ownership isolation. Workspace regressions
+now exercise the real collection/routing/lifecycle. Historical stage-1 evidence:
+the integrated extraction passed formatting, warnings-denied
 all-target Clippy, all 130 tests and a release build. A separate native instance
 launched successfully, reopened the complete 18-record synthetic archive and
 returned the expected three `timeout` matches. Its accepted UI geometry and

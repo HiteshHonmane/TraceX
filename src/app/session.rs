@@ -1,6 +1,7 @@
 //! One application-owned capture, history and investigation runtime.
 //! No window, widget, context or port-discovery ownership belongs here.
 use super::autosave::AutosaveController;
+use super::workspace::{ConnectionId, SessionId};
 use super::{capture, query_view, session_archive, shutdown};
 use super::{format_log_entries, format_log_line, register_submitted_command};
 use crate::domain::history_budget::HistoryBudget;
@@ -14,8 +15,11 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-/// The sole live session owner during the first extraction increment.
+/// One independently owned capture and investigation session.
 pub(super) struct SessionRuntime {
+    pub(super) id: SessionId,
+    pub(super) title: String,
+    pub(super) source_path: Option<PathBuf>,
     pub(super) selected_port: String,
     pub(super) baud_rate: u32,
 
@@ -27,6 +31,9 @@ pub(super) struct SessionRuntime {
     pub(super) capture_error: Option<String>,
     pub(super) stop_flag: Option<Arc<Mutex<bool>>>,
     pub(super) last_connected_port: Option<String>,
+    pub(super) connection_id: Option<ConnectionId>,
+    pub(super) next_connection_id: Option<u64>,
+    pub(super) occupied_endpoint: Option<String>,
 
     // Logs
     pub(super) logs: Vec<SharedLog>,
@@ -83,6 +90,9 @@ pub(super) struct SessionRuntime {
 impl SessionRuntime {
     pub(super) fn new() -> Self {
         Self {
+            id: SessionId(1),
+            title: "Monitor 1".to_owned(),
+            source_path: None,
             selected_port: String::new(),
             baud_rate: 115200,
 
@@ -93,6 +103,9 @@ impl SessionRuntime {
             capture_error: None,
             stop_flag: None,
             last_connected_port: None,
+            connection_id: None,
+            next_connection_id: Some(1),
+            occupied_endpoint: None,
 
             logs: Vec::new(),
             query_view: query_view::QueryView::default(),
@@ -193,6 +206,11 @@ impl SessionRuntime {
     }
 
     pub(super) fn send_command(&mut self, command: &str) -> bool {
+        if self.shutdown.active() {
+            self.command_input = command.to_owned();
+            self.operation_error = Some("Keep this session open before sending commands.".into());
+            return false;
+        }
         let command = command.trim();
         if command.is_empty() {
             return false;
@@ -247,12 +265,14 @@ impl SessionRuntime {
     }
 
     pub(super) fn clear(&mut self) {
-        if self.session_archive_busy() {
-            self.operation_error =
-                Some("Wait for the session operation before clearing logs.".to_owned());
+        if self.session_archive_busy() || self.shutdown.active() {
+            self.operation_error = Some(
+                "Keep this session open and wait for file work before clearing logs.".to_owned(),
+            );
             return;
         }
         self.logs.clear();
+        self.source_path = None;
         self.query_view.invalidate();
         self.history_dirty = false;
         self.selected.clear();

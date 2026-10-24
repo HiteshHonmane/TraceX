@@ -98,6 +98,13 @@ impl QueryWorker {
         Self::spawn_with_hook(|_| {})
     }
 
+    #[cfg(test)]
+    pub(super) fn spawn_test_hook(
+        before_compute: impl FnMut(u64) + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::spawn_with_hook(before_compute)
+    }
+
     fn spawn_with_hook(mut before_compute: impl FnMut(u64) + Send + 'static) -> io::Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(QueryState::default()),

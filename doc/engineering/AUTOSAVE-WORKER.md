@@ -2,6 +2,12 @@
 
 ## Current implementation
 
+Each independent session owns its controller, private worker channel, destination
+settings, backlog and recovery payloads. Workspace polls inactive and closing
+owners; one owner's storage failure does not stop another capture. Deferred
+picker/settings/recovery intents carry the originating SessionId and pass workspace
+close admission. See [workspace](WORKSPACE.md) for the retained-owner resource cap.
+
 TraceX text autosave runs through
 [`AutosaveWorker`](../../src/app/autosave_worker.rs), coordinated by
 [`autosave.rs`](../../src/app/autosave.rs). File creation, directory creation,

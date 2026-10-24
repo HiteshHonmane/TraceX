@@ -1,17 +1,20 @@
 use super::super::*;
+use super::actions::{FileAction, SessionUi, UiIntent};
 
-pub(super) fn render_session_actions(session: &mut SessionRuntime, ui: &mut egui::Ui) {
-    if ui.add_enabled(session.can_open_session(), egui::Button::new("Open Session…"))
+pub(super) fn render_session_actions(
+    _session: &mut SessionRuntime,
+    meta: &SessionUi,
+    intents: &mut Vec<UiIntent>,
+    ui: &mut egui::Ui,
+) {
+    if ui.add_enabled(meta.can_open, egui::Button::new("Open Session…"))
         .on_disabled_hover_text("Disconnect and finish capture, then save and clear retained history before opening another session.")
-        .on_hover_text("Validate and reopen a saved TraceX session").clicked() {
+        .on_hover_text(format!("Validate and reopen a saved TraceX session into {}", meta.title)).clicked() {
         ui.close_menu();
-        super::session_actions::choose_open_session(session);
+        intents.push(UiIntent::File(meta.id, FileAction::Open));
     }
     if ui
-        .add_enabled(
-            session.can_save_session(),
-            egui::Button::new("Save Session…"),
-        )
+        .add_enabled(meta.can_save, egui::Button::new("Save Session…"))
         .on_disabled_hover_text(
             "Stop capture and wait for other session file operations to finish.",
         )
@@ -21,34 +24,39 @@ pub(super) fn render_session_actions(session: &mut SessionRuntime, ui: &mut egui
         .clicked()
     {
         ui.close_menu();
-        super::session_actions::choose_save_session(session);
+        intents.push(UiIntent::File(meta.id, FileAction::Save));
     }
 }
 
 pub(super) fn render_app_menus(
     session: &mut SessionRuntime,
+    meta: &SessionUi,
+    intents: &mut Vec<UiIntent>,
     ui: &mut egui::Ui,
     ctx: &egui::Context,
 ) {
     ui.menu_button("File", |ui| {
-        ui.add_enabled_ui(
-            !session.shutdown.active() && !session.session_archive_busy(),
-            |ui| {
-                render_session_actions(session, ui);
-                if ui.button("Export filtered text…").clicked() {
-                    ui.close_menu();
-                    super::session_actions::choose_export_logs(session);
-                }
-                ui.separator();
-                if ui.button("Clear retained logs").clicked() {
-                    session.clear();
-                    ui.close_menu();
-                }
-            },
-        );
+        ui.add_enabled_ui(meta.can_edit && !session.session_archive_busy(), |ui| {
+            render_session_actions(session, meta, intents, ui);
+            if ui
+                .add_enabled(meta.can_export, egui::Button::new("Export filtered text…"))
+                .clicked()
+            {
+                ui.close_menu();
+                intents.push(UiIntent::File(meta.id, FileAction::Export));
+            }
+            ui.separator();
+            if ui
+                .add_enabled(meta.can_clear, egui::Button::new("Clear retained logs"))
+                .clicked()
+            {
+                intents.push(UiIntent::Clear(meta.id));
+                ui.close_menu();
+            }
+        });
         ui.separator();
         if ui.button("Exit").clicked() {
-            session.request_shutdown(Instant::now());
+            intents.push(UiIntent::CloseWindow);
             ui.close_menu();
         }
     });
@@ -82,7 +90,7 @@ pub(super) fn render_app_menus(
         ui.label(format!("TraceX {} · development preview", env!("CARGO_PKG_VERSION")));
         ui.label("Select a port and baud rate, then connect. Disconnect before saving or reopening a session.");
         ui.label("Save Session preserves all retained records. Text export follows the current search and severity filters.");
-        ui.label("Monitor tabs currently share one device capture.");
+        ui.label("Monitor tabs own independent captures. Commands name their session and connection.");
         ui.separator();
         ui.menu_button("Third-party font licenses", |ui| {
             ui.set_width(480.0);

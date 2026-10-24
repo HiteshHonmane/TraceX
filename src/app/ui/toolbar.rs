@@ -1,8 +1,11 @@
 use super::super::*;
+use super::actions::{FileAction, SessionUi, UiIntent, widget_id};
 use super::icons::{self, Icon};
 
 pub(super) fn render_toolbar(
     session: &mut SessionRuntime,
+    meta: &SessionUi,
+    intents: &mut Vec<UiIntent>,
     ui: &mut egui::Ui,
     ctx: &egui::Context,
 ) -> [egui::Rect; 8] {
@@ -20,7 +23,12 @@ pub(super) fn render_toolbar(
                     let search_width = (ui.available_width() - 370.0).clamp(140.0, 256.0);
                     let (search_slot, _) =
                         ui.allocate_exact_size(Vec2::new(search_width, 34.0), egui::Sense::hover());
-                    controls[0] = render_search(ui, &mut session.search, search_slot);
+                    controls[0] = render_search(
+                        ui,
+                        &mut session.search,
+                        search_slot,
+                        widget_id(meta.id, "search_editor"),
+                    );
                     ui.add_space(6.0);
                     ui.separator();
                     ui.add_space(6.0);
@@ -58,16 +66,20 @@ pub(super) fn render_toolbar(
                         if action.clicked() {
                             ctx.copy_text(session.copy_all_text());
                         }
-                        let action = icons::button(
-                            ui,
-                            Icon::Trash,
-                            "Clear retained logs",
-                            Vec2::splat(28.0),
-                            false,
-                        );
+                        let action = ui
+                            .add_enabled_ui(meta.can_clear, |ui| {
+                                icons::button(
+                                    ui,
+                                    Icon::Trash,
+                                    "Clear retained logs",
+                                    Vec2::splat(28.0),
+                                    false,
+                                )
+                            })
+                            .inner;
                         controls[5] = action.rect;
                         if action.clicked() {
-                            session.clear();
+                            intents.push(UiIntent::Clear(meta.id));
                         }
                         let action = icons::button(
                             ui,
@@ -82,16 +94,20 @@ pub(super) fn render_toolbar(
                             session.live_scroll_frames =
                                 live_scroll_frames_after_toggle(true, session.auto_scroll);
                         }
-                        let action = icons::button(
-                            ui,
-                            Icon::Export,
-                            "Export filtered text",
-                            Vec2::splat(28.0),
-                            false,
-                        );
+                        let action = ui
+                            .add_enabled_ui(meta.can_export, |ui| {
+                                icons::button(
+                                    ui,
+                                    Icon::Export,
+                                    "Export filtered text",
+                                    Vec2::splat(28.0),
+                                    false,
+                                )
+                            })
+                            .inner;
                         controls[7] = action.rect;
                         if action.clicked() {
-                            super::session_actions::choose_export_logs(session);
+                            intents.push(UiIntent::File(meta.id, FileAction::Export));
                         }
                         if ui.available_width() > 150.0 && !session.logs.is_empty() {
                             ui.label(
@@ -121,7 +137,12 @@ pub(super) fn render_toolbar(
     controls
 }
 
-fn render_search(ui: &mut egui::Ui, search: &mut String, slot: egui::Rect) -> egui::Rect {
+fn render_search(
+    ui: &mut egui::Ui,
+    search: &mut String,
+    slot: egui::Rect,
+    id: egui::Id,
+) -> egui::Rect {
     ui.painter().rect(
         slot,
         4.0,
@@ -140,6 +161,7 @@ fn render_search(ui: &mut egui::Ui, search: &mut String, slot: egui::Rect) -> eg
     let response = ui.put(
         text_rect,
         egui::TextEdit::singleline(search)
+            .id(id)
             .font(FontId::proportional(14.0))
             .margin(egui::Margin::ZERO)
             .hint_text("Search")
@@ -302,6 +324,7 @@ mod tests {
     #[test]
     fn toolbar_stays_at_approved_52_point_height_without_status() {
         let mut app = SessionRuntime::new();
+        let meta = SessionUi::test(&app);
         let ctx = egui::Context::default();
         theme::setup(&ctx);
         let _ = ctx.run(
@@ -315,7 +338,7 @@ mod tests {
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let top = ui.cursor().top();
-                    render_toolbar(&mut app, ui, ctx);
+                    render_toolbar(&mut app, &meta, &mut Vec::new(), ui, ctx);
                     assert!(
                         (ui.cursor().top() - top - 52.0).abs() < 0.1,
                         "toolbar includes unexpected vertical spacing"
@@ -375,6 +398,7 @@ mod tests {
     fn search_levels_and_actions_fit_minimum_and_regular_clients() {
         for width in [800.0, 1200.0, 1280.0] {
             let mut app = SessionRuntime::new();
+            let meta = SessionUi::test(&app);
             let ctx = egui::Context::default();
             theme::setup(&ctx);
             let _ = ctx.run(
@@ -391,7 +415,7 @@ mod tests {
                         .show(ctx, |_| {});
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let available = ui.available_rect_before_wrap();
-                        let controls = render_toolbar(&mut app, ui, ctx);
+                        let controls = render_toolbar(&mut app, &meta, &mut Vec::new(), ui, ctx);
                         if controls[2].is_positive() {
                             for chip in &controls[1..4] {
                                 assert!(

@@ -1,26 +1,32 @@
 use super::*;
+use actions::{SessionUi, UiIntent, widget_id};
 
+mod actions;
 mod autosave;
+mod close;
 mod command_bar;
+pub(super) mod file_dialog;
 mod icons;
 mod menus;
-mod session_actions;
 mod sidebar;
+#[cfg(test)]
+mod state_tests;
 mod tabs;
 mod toolbar;
 
 fn render_filter_rows(
     session: &mut SessionRuntime,
+    owner: SessionId,
     ui: &mut egui::Ui,
     ctx: &egui::Context,
     results: &[usize],
     content_width: f32,
-) -> usize {
+) -> (usize, egui::Id) {
     let mut rendered = 0;
     // The allocated row and spacing together remain exactly 25 points.
     let row_height = (25.0 - ui.spacing().item_spacing.y).max(1.0);
-    egui::ScrollArea::both()
-        .id_salt("filter_results_scroll")
+    let output = egui::ScrollArea::both()
+        .id_salt(widget_id(owner, "filter_results_scroll"))
         .auto_shrink([false; 2])
         .show_rows(ui, row_height, results.len(), |ui, range| {
             ui.set_min_width(content_width);
@@ -96,73 +102,11 @@ fn render_filter_rows(
                 }
             }
         });
-    rendered
-}
-
-fn intercept_window_close(session: &mut SessionRuntime, ctx: &egui::Context, now: Instant) {
-    if ctx.input(|input| input.viewport().close_requested()) && !session.shutdown.allows_close() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        session.request_shutdown(now);
-    }
-}
-
-fn render_shutdown_dialog(session: &mut SessionRuntime, ctx: &egui::Context) {
-    if !session.shutdown.active() || session.shutdown.allows_close() {
-        return;
-    }
-    let reason = session.shutdown.decision().map(str::to_owned);
-    let unsaved_session = session.shutdown.unsaved_session_confirmation();
-    egui::Modal::new(egui::Id::new("orderly_shutdown")).show(ctx, |ui| {
-        ui.set_max_width(440.0);
-        if unsaved_session {
-            ui.heading("Session history has not been saved");
-            ui.label("Retained session history has not been saved as a TraceX session. Text autosave/export may exist. Keep open to save, or close without saving the session.");
-            ui.horizontal(|ui| {
-                if ui.button("Keep open").clicked() {
-                    session.shutdown.keep_open();
-                }
-                if ui.button("Close without saving session").clicked() {
-                    session.shutdown.close_without_saving_session();
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            });
-        } else if let Some(reason) = reason {
-            ui.heading("Shutdown incomplete");
-            ui.label(reason);
-            ui.label("Keep open to review or export pending logs. Capture remains stopped.");
-            ui.horizontal(|ui| {
-                if ui.button("Keep open").clicked() {
-                    session.shutdown.keep_open();
-                }
-                if ui
-                    .button("Force close — pending logs may be lost")
-                    .clicked()
-                {
-                    session.shutdown.force_close();
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            });
-        } else {
-            ui.heading("Finishing capture and saved logs");
-            ui.label("Waiting for received logs, autosave and session files to finish.");
-            ui.spinner();
-            if ui.button("Keep open").clicked() {
-                session.shutdown.keep_open();
-            }
-        }
-    });
+    (rendered, output.id)
 }
 
 impl TraceXApp {
-    // Monitor tabs currently present the same capture; opening a view must not
-    // reset logs, selection, or the active transport.
-    fn open_monitor_view(&mut self) {
-        if let Some(tab) = self.ui_tabs.get_mut(self.active_tab) {
-            tab.setup = false;
-        }
-    }
-
-    fn render_window_bar(&mut self, ctx: &egui::Context) {
+    fn render_window_bar(&mut self, ctx: &egui::Context, intents: &mut Vec<UiIntent>) {
         egui::TopBottomPanel::top("window_bar")
             .exact_height(WINDOW_BAR_HEIGHT)
             .frame(
@@ -207,7 +151,14 @@ impl TraceXApp {
                     ui.scope(|ui| {
                         ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
                         ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
-                        menus::render_app_menus(&mut self.session, ui, ctx);
+                        let id = self.workspace.active_session_id();
+                        if let Some(meta) = SessionUi::snapshot(&self.workspace, id)
+                            && let Some(session) = self.workspace.session_mut(id)
+                        {
+                            ui.push_id(widget_id(id, "app_menus"), |ui| {
+                                menus::render_app_menus(session, &meta, intents, ui, ctx)
+                            });
+                        }
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let close = icons::button(
@@ -218,7 +169,7 @@ impl TraceXApp {
                             false,
                         );
                         if close.clicked() {
-                            self.session.request_shutdown(Instant::now());
+                            intents.push(UiIntent::CloseWindow);
                         }
                         let maximize = icons::button(
                             ui,
@@ -261,88 +212,89 @@ impl TraceXApp {
             .lock()
             .map(|ports| ports.clone())
             .unwrap_or_default();
-        intercept_window_close(&mut self.session, ctx, Instant::now());
-        self.session.poll();
-        self.session.refresh_query_view();
-        if self.session.shutdown.active() {
-            if self.session.advance_shutdown(Instant::now()) == shutdown::ShutdownAction::Close {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-        } else {
-            self.session.check_auto_reconnect(&ports);
+        close::intercept_window_close(&mut self.workspace, ctx, Instant::now());
+        actions::poll_dialogs(&mut self.workspace, &mut self.dialogs, ctx);
+        self.workspace.poll(Instant::now(), &ports);
+        if self.workspace.window_allows_close() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         ctx.request_repaint_after(Duration::from_millis(50));
-
-        let copy_requested =
-            ctx.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd) && i.key_pressed(egui::Key::C));
-        if copy_requested {
-            ctx.copy_text(self.session.copy_selected_text());
+        if ctx.input(|i| (i.modifiers.ctrl || i.modifiers.mac_cmd) && i.key_pressed(egui::Key::C))
+            && let Some(session) = self.workspace.active_session()
+        {
+            ctx.copy_text(session.copy_selected_text());
         }
-
-        self.render_window_bar(ctx);
-
-        sidebar::render_sidebar(&mut self.session, &ports, ctx);
-
-        self.render_tabs(ctx);
-
-        command_bar::render_command_bar(&mut self.session, ctx);
-
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(theme::BG_DARK))
-            .show(ctx, |ui| {
-                let showing_setup = self
-                    .ui_tabs
-                    .get(self.active_tab)
-                    .map(|tab| tab.setup)
-                    .unwrap_or(false);
-                if showing_setup {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(90.0);
-                        ui.label(
-                            RichText::new("NEW MONITOR SESSION")
-                                .size(18.0)
-                                .color(theme::TEXT)
-                                .strong(),
-                        );
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new("Monitor tabs share the current capture and connection.")
-                                .size(11.0)
-                                .color(theme::TEXT_DIM),
-                        );
-                        ui.add_space(20.0);
-                        let ready = !self.session.selected_port.is_empty();
-                        if ui
-                            .add_enabled(
-                                ready,
-                                egui::Button::new(
-                                    RichText::new("OPEN MONITOR")
-                                        .size(10.0)
-                                        .color(theme::ACCENT)
-                                        .strong(),
-                                )
-                                .min_size(Vec2::new(132.0, 34.0)),
-                            )
-                            .clicked()
-                        {
-                            self.open_monitor_view();
-                        }
-                        ui.add_space(6.0);
-                        if ui.small_button("Back to current monitor").clicked() {
-                            self.active_tab = 0;
-                        }
+        let mut intents = Vec::new();
+        self.render_window_bar(ctx, &mut intents);
+        let id = self.workspace.active_session_id();
+        if let Some(meta) = SessionUi::snapshot(&self.workspace, id)
+            && let Some(session) = self.workspace.session_mut(id)
+        {
+            sidebar::render_sidebar(session, &meta, &mut intents, &ports, ctx);
+        }
+        tabs::render_tabs(&self.workspace, ctx, &mut intents);
+        if let Some(meta) = SessionUi::snapshot(&self.workspace, id) {
+            if let Some(session) = self.workspace.session_mut(id) {
+                command_bar::render_command_bar(session, &meta, &mut intents, ctx);
+            }
+            let workspace_error = self.workspace.operation_error.clone();
+            let picker_owner = self
+                .dialogs
+                .pending_session()
+                .and_then(|owner| self.workspace.session(owner))
+                .map(|s| s.title.clone());
+            if let Some(session) = self.workspace.session_mut(id) {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::none().fill(theme::BG_DARK))
+                    .show(ctx, |ui| {
+                        ui.push_id(widget_id(id, "monitor"), |ui| {
+                            if let Some(owner) = &picker_owner {
+                                ui.label(
+                                    RichText::new(format!("File picker open for {owner}"))
+                                        .size(11.0)
+                                        .color(theme::TEXT_DIM),
+                                );
+                            }
+                            if let Some(error) = &workspace_error {
+                                ui.horizontal(|ui| {
+                                    let text_width = (ui.available_width() - 70.0).max(1.0);
+                                    ui.add_sized([text_width, 0.0],
+                                    egui::Label::new(
+                                        RichText::new(format!("Workspace: {error}"))
+                                            .size(12.0)
+                                            .color(theme::ERROR),
+                                    )
+                                    .wrap(),
+                                );
+                                    if ui.small_button("Dismiss")
+                                        .on_hover_text("Dismiss this workspace notification; session failures remain available")
+                                        .clicked() {
+                                        intents.push(UiIntent::DismissWorkspaceError);
+                                    }
+                                });
+                            }
+                            render_monitor(session, &meta, &mut intents, ui, ctx);
+                        });
                     });
-                    return;
-                }
-                render_monitor(&mut self.session, ui, ctx);
-            });
-        render_shutdown_dialog(&mut self.session, ctx);
+            }
+        }
+        close::render_close_dialog(&self.workspace, ctx, &mut intents);
+        actions::dispatch(&mut self.workspace, &mut self.dialogs, intents);
+        if self.workspace.window_allows_close() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 }
 
-fn render_monitor(session: &mut SessionRuntime, ui: &mut egui::Ui, ctx: &egui::Context) {
-    toolbar::render_toolbar(session, ui, ctx);
-    session.refresh_query_view();
+fn render_monitor(
+    session: &mut SessionRuntime,
+    meta: &SessionUi,
+    intents: &mut Vec<UiIntent>,
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+) -> Option<egui::Id> {
+    let mut scroll_id = None;
+    toolbar::render_toolbar(session, meta, intents, ui, ctx);
     let snapshot = session
         .query_snapshot()
         .filter(|result| result.record_count <= session.logs.len());
@@ -381,7 +333,7 @@ fn render_monitor(session: &mut SessionRuntime, ui: &mut egui::Ui, ctx: &egui::C
             .map_or(0.0, |result| result.main_width)
             .max(ui.available_width());
         let mut log_scroll = egui::ScrollArea::both()
-            .id_salt("primary_log_scroll")
+            .id_salt(widget_id(meta.id, "primary_log_scroll"))
             .auto_shrink([false; 2])
             .stick_to_bottom(session.auto_scroll);
         if let Some(index) = target_index {
@@ -398,7 +350,7 @@ fn render_monitor(session: &mut SessionRuntime, ui: &mut egui::Ui, ctx: &egui::C
                 upper_height,
             ));
         }
-        log_scroll.show_rows(ui, row_height_sans_spacing, rows.len(), |ui, range| {
+        let scroll = log_scroll.show_rows(ui, row_height_sans_spacing, rows.len(), |ui, range| {
             ui.set_min_width(content_width);
             for i in range {
                 let entry = &session.logs[rows[i]];
@@ -417,6 +369,7 @@ fn render_monitor(session: &mut SessionRuntime, ui: &mut egui::Ui, ctx: &egui::C
                 }
             }
         });
+        scroll_id = Some(scroll.id);
         if jump_target.is_some() {
             if session.scroll_jump_settle_frames > 0 {
                 session.scroll_jump_settle_frames -= 1;
@@ -577,10 +530,11 @@ fn render_monitor(session: &mut SessionRuntime, ui: &mut egui::Ui, ctx: &egui::C
                         }
                     })
                     .max(ui.available_width());
-                render_filter_rows(session, ui, ctx, results, content_width);
+                render_filter_rows(session, meta.id, ui, ctx, results, content_width);
             }
         });
     }
+    scroll_id
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -591,70 +545,30 @@ fn render_monitor(session: &mut SessionRuntime, ui: &mut egui::Ui, ctx: &egui::C
 mod monitor_view_tests {
     use super::*;
 
-    // No serial enumeration, capture worker, or disk writes. Full update tests
-    // may start the existing bounded background query worker.
     fn app_without_io() -> TraceXApp {
         let mut app = TraceXApp::with_ports(Arc::new(Mutex::new(Vec::new())));
-        app.session.auto_save_path = None;
+        app.workspace.active_session_mut().unwrap().auto_save_path = None;
         app
     }
 
-    #[test]
-    fn shared_setup_view_still_polls_sole_session_before_rendering_setup() {
-        let ctx = egui::Context::default();
-        let mut app = app_without_io().prepare_native_ui(&ctx);
-        let (feed, inbox) = capture::CaptureInbox::test_channel();
-        app.session.capture = Some(inbox);
-        app.session.command_input = "unsent while setup is open".to_owned();
-        app.ui_tabs.push(UiTab {
-            title: "Monitor 2".to_owned(),
-            setup: true,
-        });
-        app.active_tab = 1;
-        feed.send("queued before setup frame".to_owned()).unwrap();
-        let input = egui::RawInput {
+    fn input() -> egui::RawInput {
+        egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 Vec2::new(1200.0, 800.0),
             )),
             ..Default::default()
-        };
-        let first = ctx.run(input.clone(), |ctx| app.update_native_ui(ctx));
-        assert!(first.shapes.iter().any(|shape| match &shape.shape {
-            egui::Shape::Text(text) => text.galley.job.text == "NEW MONITOR SESSION",
-            _ => false,
-        }));
-        assert_eq!(app.active_tab, 1);
-        assert!(app.ui_tabs[1].setup);
-        assert_eq!(app.session.logs.len(), 1);
-        assert_eq!(app.session.logs[0].raw, "queued before setup frame");
-        assert_eq!(app.session.next_id, 1);
-        assert!(app.session.history_dirty);
-        feed.send("queued for the next setup frame".to_owned())
-            .unwrap();
-        let _ = ctx.run(input, |ctx| app.update_native_ui(ctx));
-        assert_eq!(app.session.logs.len(), 2);
-        assert_eq!(app.session.logs[1].raw, "queued for the next setup frame");
-        assert_eq!(app.session.command_input, "unsent while setup is open");
+        }
     }
 
     #[test]
     fn prepared_creation_path_renders_named_fonts_on_first_actual_update() {
         let ctx = egui::Context::default();
-        // Use the same preparation method as eframe's CreationContext callback,
-        // then execute the complete update path used by eframe::App::update.
         let mut app = app_without_io().prepare_native_ui(&ctx);
-        app.session.command_input = "unsent command".to_owned();
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                Vec2::new(1200.0, 800.0),
-            )),
-            ..Default::default()
-        };
-        let first = ctx.run(input.clone(), |ctx| app.update_native_ui(ctx));
-        assert!(
-            first.shapes.iter().any(|shape| match &shape.shape {
+        app.workspace.active_session_mut().unwrap().command_input = "unsent command".to_owned();
+        let first = ctx.run(input(), |ctx| app.update_native_ui(ctx));
+        assert!(first.shapes.iter().any(|shape| {
+            match &shape.shape {
                 egui::Shape::Text(text) => {
                     text.galley.job.text == "TraceX"
                         && text
@@ -662,106 +576,89 @@ mod monitor_view_tests {
                             .job
                             .sections
                             .iter()
-                            .any(|section| section.format.font_id == theme::medium_font(31.0))
+                            .any(|s| s.format.font_id == theme::medium_font(31.0))
                 }
                 _ => false,
-            }),
-            "the first update must render the named-font wordmark"
+            }
+        }));
+        let _ = ctx.run(input(), |ctx| app.update_native_ui(ctx));
+        assert_eq!(
+            app.workspace.active_session().unwrap().command_input,
+            "unsent command"
         );
-        let _ = ctx.run(input, |ctx| app.update_native_ui(ctx));
-        assert_eq!(app.session.command_input, "unsent command");
-        assert!(app.session.logs.is_empty());
-        assert!(!app.session.connected);
+        assert!(app.workspace.active_session().unwrap().logs.is_empty());
+    }
+
+    #[test]
+    fn inactive_session_is_polled_while_another_owner_is_active() {
+        let ctx = egui::Context::default();
+        let mut app = app_without_io().prepare_native_ui(&ctx);
+        let a = app.workspace.active_session_id();
+        let (feed, inbox) = capture::CaptureInbox::test_channel();
+        app.workspace.session_mut(a).unwrap().capture = Some(inbox);
+        app.workspace.session_mut(a).unwrap().command_input = "draft A".to_owned();
+        let b = app.workspace.create_session().unwrap();
+        app.workspace.select_session(b).unwrap();
+        feed.send("queued while B is active".to_owned()).unwrap();
+        let _ = ctx.run(input(), |ctx| app.update_native_ui(ctx));
+        assert_eq!(app.workspace.active_session_id(), b);
+        assert_eq!(
+            app.workspace.session(a).unwrap().logs[0].raw,
+            "queued while B is active"
+        );
+        assert_eq!(app.workspace.session(a).unwrap().command_input, "draft A");
+        assert!(app.workspace.session(b).unwrap().logs.is_empty());
     }
 
     #[test]
     fn secondary_results_render_only_visible_rows_from_large_snapshot() {
-        let mut app = app_without_io();
-        app.session.logs = (0..10_000)
+        let mut session = SessionRuntime::new();
+        session.logs = (0..10_000)
             .map(|id| LogEntry::new(id, format!("record {id}"), "12:00:00").into())
             .collect();
-        let results: Vec<_> = (0..app.session.logs.len()).collect();
-        app.session.selected.insert(9_999);
+        let results: Vec<_> = (0..session.logs.len()).collect();
+        session.selected.insert(9_999);
         let ctx = egui::Context::default();
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(800.0, 300.0),
-            )),
-            ..Default::default()
-        };
         let mut rendered = 0;
-        let _ = ctx.run(input, |ctx| {
+        let owner = session.id;
+        let _ = ctx.run(input(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                rendered = render_filter_rows(&mut app.session, ui, ctx, &results, 800.0);
+                rendered = render_filter_rows(&mut session, owner, ui, ctx, &results, 800.0).0;
             });
         });
-        assert!(rendered > 0);
-        assert!(
-            rendered < 100,
-            "a 300-point viewport must not render all 10,000 results: {rendered}"
-        );
-        assert!(app.session.selected.contains(&9_999));
+        assert!(rendered > 0 && rendered < 100);
+        assert!(session.selected.contains(&9_999));
     }
 
     #[test]
-    fn os_close_is_cancelled_until_shutdown_is_explicitly_ready() {
+    fn os_close_is_cancelled_until_workspace_is_explicitly_ready() {
         let mut app = app_without_io();
         let ctx = egui::Context::default();
-        let mut input = egui::RawInput::default();
-        input
-            .viewports
+        let mut raw = input();
+        raw.viewports
             .entry(egui::ViewportId::ROOT)
             .or_default()
             .events
             .push(egui::ViewportEvent::Close);
-        let output = ctx.run(input.clone(), |ctx| {
-            intercept_window_close(&mut app.session, ctx, Instant::now())
+        let output = ctx.run(raw.clone(), |ctx| {
+            close::intercept_window_close(&mut app.workspace, ctx, Instant::now())
         });
-        assert!(app.session.shutdown.active());
+        assert!(app.workspace.window_closing());
         assert!(
             output.viewport_output[&egui::ViewportId::ROOT]
                 .commands
                 .iter()
-                .any(|command| matches!(command, egui::ViewportCommand::CancelClose))
+                .any(|c| matches!(c, egui::ViewportCommand::CancelClose))
         );
-        app.session.shutdown.force_close();
-        let output = ctx.run(input, |ctx| {
-            intercept_window_close(&mut app.session, ctx, Instant::now())
+        app.workspace.poll(Instant::now(), &[]);
+        let output = ctx.run(raw, |ctx| {
+            close::intercept_window_close(&mut app.workspace, ctx, Instant::now())
         });
         assert!(
             !output.viewport_output[&egui::ViewportId::ROOT]
                 .commands
                 .iter()
-                .any(|command| matches!(command, egui::ViewportCommand::CancelClose))
+                .any(|c| matches!(c, egui::ViewportCommand::CancelClose))
         );
-    }
-    #[test]
-    fn opening_monitor_preserves_shared_capture_and_selection() {
-        let mut app = app_without_io();
-        app.session.logs.push(Arc::new(LogEntry::new(
-            7,
-            "captured before opening".to_owned(),
-            "12:00:00",
-        )));
-        app.session.next_id = 8;
-        app.session.selected.insert(7);
-        app.session.selected_port = "test-device".to_owned();
-        app.ui_tabs.push(UiTab {
-            title: "Monitor 2".to_owned(),
-            setup: true,
-        });
-        app.active_tab = 1;
-
-        app.open_monitor_view();
-        app.open_monitor_view();
-
-        assert!(!app.ui_tabs[1].setup);
-        assert_eq!(app.session.logs.len(), 1);
-        assert_eq!(app.session.logs[0].id, 7);
-        assert_eq!(app.session.logs[0].raw, "captured before opening");
-        assert_eq!(app.session.next_id, 8);
-        assert!(app.session.selected.contains(&7));
-        assert_eq!(app.session.selected_port, "test-device");
     }
 }

@@ -20,6 +20,7 @@ pub(super) struct SessionArchive {
     // Shared handoff preserves moved history if spawning a worker fails.
     save_records: Option<Arc<Mutex<Option<Vec<SharedLog>>>>>,
     failure: Option<String>,
+    opening_path: Option<PathBuf>,
 }
 enum ArchiveResult {
     Saved {
@@ -212,12 +213,14 @@ impl SessionRuntime {
             return;
         }
         let (sender, receiver) = mpsc::sync_channel(1);
+        let opening_path = path.clone();
         match thread::Builder::new()
             .name("tracex-session-open".into())
             .spawn(move || {
                 let _ = sender.send(ArchiveResult::Opened(open(path)));
             }) {
             Ok(_) => {
+                self.session_archive.opening_path = Some(opening_path);
                 self.session_archive.receiver = Some(receiver);
                 self.operation_error = Some(
                     "Opening session… validating the complete file before restoring records."
@@ -244,6 +247,7 @@ impl SessionRuntime {
                     self.logs = take_records(records);
                 }
                 self.session_archive.receiver = None;
+                self.session_archive.opening_path = None;
                 self.rebuild_history_accounting();
                 self.archive_failed(
                     "Session worker ended unexpectedly; original records retained.".into(),
@@ -267,6 +271,7 @@ impl SessionRuntime {
                 result
             }
             ArchiveResult::Opened(result) => result.map(|records| {
+                self.source_path = self.session_archive.opening_path.take();
                 self.next_id = records.last().map_or(0, |entry| entry.id + 1);
                 self.logs = records;
                 self.selected.clear();
@@ -274,6 +279,7 @@ impl SessionRuntime {
                 self.history_dirty = false;
             }),
         };
+        self.session_archive.opening_path = None;
         self.rebuild_history_accounting();
         match result {
             Ok(()) => {
@@ -299,3 +305,28 @@ mod tests;
 #[cfg(test)]
 #[path = "session_runtime_tests.rs"]
 mod runtime_owner_tests;
+
+/// Controlled completion handoff for workspace tests; no timing or disk thread.
+#[cfg(test)]
+pub(super) struct HeldArchiveSave(mpsc::SyncSender<ArchiveResult>);
+#[cfg(test)]
+impl HeldArchiveSave {
+    pub(super) fn complete(self, result: Result<(), String>) -> Result<(), String> {
+        self.0
+            .send(ArchiveResult::Saved {
+                result,
+                marks_clean: true,
+            })
+            .map_err(|cause| cause.to_string())
+    }
+}
+#[cfg(test)]
+impl SessionRuntime {
+    pub(super) fn hold_session_save_for_test(&mut self) -> HeldArchiveSave {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.session_archive.save_records =
+            Some(Arc::new(Mutex::new(Some(std::mem::take(&mut self.logs)))));
+        self.session_archive.receiver = Some(receiver);
+        HeldArchiveSave(sender)
+    }
+}

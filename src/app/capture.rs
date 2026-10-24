@@ -443,8 +443,14 @@ impl TestFeed {
         self.publish_terminal = false;
     }
     pub fn send(&self, record: String) -> Result<(), String> {
+        self.send_batch(vec![record])
+    }
+    pub fn send_batch(&self, records: Vec<String>) -> Result<(), String> {
+        if records.is_empty() {
+            return Err("Test capture batch must contain a record".into());
+        }
         let sequence = self.sequence.get();
-        let batch = CaptureBatch::new(sequence, VecDeque::from([record]));
+        let batch = CaptureBatch::new(sequence, VecDeque::from(records));
         let charge = batch.charge;
         let mut usage = lock(&self.usage);
         self.sender

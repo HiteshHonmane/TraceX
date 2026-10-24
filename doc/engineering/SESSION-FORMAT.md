@@ -36,6 +36,13 @@ Register the module only after architecture acceptance. No SQLite, UI, transport
 
 ## Disconnected archive workflow
 
+Workspace dispatches every operation to its captured SessionId. Another owner's
+capture, query, history and dirty state are unaffected. File pickers return
+through a bounded UI-shell handoff so background ingestion can continue; returned
+paths revalidate that originating owner. Successful Open records its source path
+without renaming its stable Monitor title. Failed Open
+preserves prior source metadata. See [workspace](WORKSPACE.md).
+
 The application archive worker creates fresh `.tracex` files, writes every retained record, flushes and calls file `sync_data` before reporting save success. It does not promise filesystem directory-entry durability or hardware guarantees. A failed save may leave a partial new file; it never overwrites an existing file. Original in-memory records return on success or failure and remain available for a new-path retry. The UI moves the original vector into the worker handoff instead of cloning it and shows operation-in-progress status.
 
 Save requires capture disconnected, no autosave Stop/Finish currently finalizing (`!auto_save.stopping`), no archive operation and no shutdown underway. Active autosave is allowed while it is not finalizing, including when a stopped capture still owns unread inbox records. Save snapshots all currently retained history without applying search/severity filters and leaves the inbox owned. Ingestion pauses during the worker handoff. This allows a history-limit user to Save the complete retained batch before deliberately clearing it to make room for pending records. The saved snapshot excludes pending records; their later admission marks history dirty again. Save failure preserves the original dirty history and pending inbox. The application exposes `can_save_session()` for this capability.

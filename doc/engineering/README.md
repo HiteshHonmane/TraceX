@@ -29,6 +29,7 @@ All contributors should read:
 ## Implemented behavior contracts
 
 - [Single-owner session runtime extraction](SESSION-RUNTIME.md)
+- [Independent session workspace](WORKSPACE.md)
 - [Asynchronous text autosave](AUTOSAVE-WORKER.md)
 - [Bounded history retention](HISTORY-RETENTION.md)
 - [Session segment format and archive operations](SESSION-FORMAT.md)
