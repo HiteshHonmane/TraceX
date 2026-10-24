@@ -89,7 +89,9 @@ fn render_connection_configuration(
     ui.add_space(28.0);
     ui.label(
         RichText::new("CONFIGURATION")
-            .size(10.0)
+            // Size/tracking approximate the approved raster; no inspector token was available.
+            .size(12.0)
+            .extra_letter_spacing(0.7)
             .color(theme::TEXT_MUTED),
     );
     ui.add_space(12.0);
@@ -346,4 +348,36 @@ fn autosave_toggle(ui: &mut egui::Ui, enabled: &mut bool) -> egui::Response {
     ui.painter()
         .circle_filled(egui::pos2(knob_x, rect.center().y), 6.0, theme::TEXT);
     response.on_hover_text("Enable text autosave; actual write status appears below")
+}
+
+#[cfg(test)]
+mod heading_tests {
+    use super::*;
+
+    #[test]
+    fn configuration_heading_matches_raster_derived_size_without_changing_other_roles() {
+        let mut session = SessionRuntime::new();
+        let meta = SessionUi::test(&session);
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            render_sidebar(&mut session, &meta, &mut Vec::new(), &[], ctx);
+        });
+        let heading = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "CONFIGURATION" => Some(text),
+                _ => None,
+            })
+            .expect("configuration heading must remain visible");
+        let format = &heading.galley.job.sections[0].format;
+        assert_eq!(format.font_id.size, 12.0);
+        assert_eq!(format.extra_letter_spacing, 0.7);
+        assert!(
+            (100.0..=112.0).contains(&heading.galley.size().x),
+            "{:?}",
+            heading.galley.size()
+        );
+    }
 }

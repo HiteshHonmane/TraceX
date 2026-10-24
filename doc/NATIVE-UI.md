@@ -34,7 +34,10 @@ preparation path and checks the first-frame named-font wordmark.
   into that session's editor; Send or Enter submits to the displayed session and
   captured connection generation through workspace admission.
   There are no invented executable command presets. Failed submission preserves
-  editor text. The auto-clear preference is available in Settings.
+  editor text. The owner-scoped line-ending dropdown offers the existing
+  **NL & CR** (append CRLF) and **NONE** (unchanged bytes) choices; it follows
+  the owner's edit capability. Selection alone never sends a command. The
+  auto-clear preference is available in Settings.
 - Monitor tabs now represent distinct retained session owners, with a provisional
   cap of two including closing sessions. Titles remain stable; lifecycle cues and
   an independent `*` identify unsaved retained history. Sidebar configuration,
@@ -75,7 +78,7 @@ preparation path and checks the first-frame named-font wordmark.
 ## Verification scope
 
 Headless egui regressions check toolbar containment and overlap at 800, 1200 and
-1280 logical pixels, command containment at 800 and 1200, and visible wrapped
+1280 logical pixels, full command-rail containment at all three widths, and visible wrapped
 query status at narrow widths. Other regressions cover command recall without
 transmission, failed-send editor preservation, independent widget state and owner-bound action routing, and complete themed
 widget states. Workspace regressions additionally cover lifecycle/resource/routing
@@ -122,15 +125,51 @@ captured/stale command destinations, session-named close decisions, and selected
 search-text clipboard behavior. Controlled pending picker futures prove both
 owners continue ingesting across frames; completed and late removed-owner
 results verify origin-only mutation and explicit rejection without native input.
-These are deterministic regression results, not physical UART, sustained-load,
-display-scale or new two-owner native acceptance. The lead records the integrated
-gate and subsequent native A/B import/search/close review separately.
+These are deterministic regression results. Native evidence below is separate
+from physical UART, sustained-load and display-scale qualification.
 
-The integrated two-owner checkpoint passed formatting, all-target Clippy with
+The historical integrated two-owner checkpoint passed formatting, all-target Clippy with
 warnings denied, all 154 tests and a release build on 2026-10-23. The separate
 executable is `target/session-ui/release/tracex.exe` (SHA-256
 `42E5C9A1AF94E0AE9A25AB05B0B20EE0C16AAB9EE0E5CC4E9AD7BFD21E5D4055`).
-Desktop verification stopped when the owner pressed Escape before this build
-was launched. Native two-owner rendering, async platform pickers and A/B
-import/search/save/close remain unverified; the earlier single-owner native
-acceptance does not establish acceptance of this checkpoint.
+Desktop verification initially stopped when the owner pressed Escape before
+that build was launched. The owner resumed native review on 2026-10-24 against
+the later `a1c96c2` capture-lifetime build, for which the lead reports formatting,
+warnings-denied Clippy, 155 tests and a release build passed.
+
+The lead's native review used synthetic session archives: A retained 18 records
+with three `timeout` matches; B retained four with two `voltage` matches and its
+own draft. B's native picker completed while A was active and still targeted B.
+Saving B while filtered preserved all four records; the saved archive was byte
+identical to its fixture (SHA-256
+`B404DA29D9526C4E0FFF552A5BF83DFE602FF2E7F2051AE4EF623F3A21FAF284`).
+Cleanly closing A preserved B's title, query and draft. A new Monitor 3 opened
+the saved B archive with all four records and an empty query/draft. This supports
+those native owner/picker/archive/close workflows; it does not establish device
+sends, physical UART, multiple display scales or sustained-load acceptance.
+
+The subsequent focused visual correction uses 28-point command-rail horizontal
+insets, a 92-point ending dropdown, 24-point tab-title inset and a 12-point
+configuration heading with 0.7-point letter spacing. Heading size/tracking are
+estimates from the approved raster, not verified Figma inspector tokens. Four
+new headless regressions pass, including actual dropdown interaction, owner
+isolation and unchanged command byte behavior. The lead's integrated formatting,
+warnings-denied all-target Clippy, 159 tests and release build passed. Because E:
+was full, the separate executable is
+`C:/Users/Admin/.codex/tmp/tracex-ui-fidelity-oct24/release/tracex.exe`, SHA-256
+`4F56DD287DFC5383E4B176BB8D01E418453888532CC34200C34FD7F37DC72D69`.
+Existing running builds were preserved.
+
+The corrected build launched and was reviewed at 1200 x 800. The real ending
+popup showed both supported choices above the footer. Selecting NONE in Monitor 1,
+creating Monitor 2 with its default NL & CR, then returning to Monitor 1 preserved
+the independent choices without sending a command. Reopening the synthetic
+18-record archive and entering `timeout` displayed three matches while retaining
+all 18 records. Design and QA independently reviewed the corrected empty/popup
+screenshots and found no blocking defect in those views. Evidence is saved in
+`C:/Users/Admin/.codex/tmp/tracex-ui-review-oct24/` (empty, ending-popup,
+monitor2-ending-default, monitor1-ending-restored, reopened and search JPEGs).
+The approximately 20-point leading File-menu spacing difference remains a minor
+fidelity follow-up; full pixel parity is not claimed. A corner-drag attempt did
+not resize the native window, so minimum-height and multi-DPI acceptance remain
+pending alongside Unicode coverage and hardware/soak qualification.

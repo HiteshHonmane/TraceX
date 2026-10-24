@@ -114,7 +114,7 @@ pub(super) fn render_tabs(workspace: &Workspace, ctx: &egui::Context, intents: &
                             egui::pos2(rect.right() - 30.0, rect.bottom()),
                         );
                         ui.painter().with_clip_rect(clip).text(
-                            egui::pos2(rect.left() + 16.0, rect.center().y),
+                            egui::pos2(rect.left() + 24.0, rect.center().y),
                             egui::Align2::LEFT_CENTER,
                             title,
                             if active {
@@ -204,4 +204,54 @@ pub(super) fn render_tabs(workspace: &Workspace, ctx: &egui::Context, intents: &
                 });
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_dirty_tab_titles_fit_between_inset_and_close_target() {
+        let mut workspace = Workspace::new();
+        let a = workspace.active_session_id();
+        let b = workspace.create_session().unwrap();
+        workspace.session_mut(a).unwrap().history_dirty = true;
+        workspace.session_mut(b).unwrap().history_dirty = true;
+        for width in [800.0, 1200.0, 1280.0] {
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(width, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::SidePanel::left("sidebar")
+                        .exact_width(256.0)
+                        .show(ctx, |_| {});
+                    render_tabs(&workspace, ctx, &mut Vec::new());
+                },
+            );
+            for expected in ["Monitor 1 *", "Monitor 2 *"] {
+                let title = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == expected => {
+                            Some((shape.clip_rect, text))
+                        }
+                        _ => None,
+                    })
+                    .expect("dirty title must be painted");
+                assert!((title.1.pos.x - title.0.left() - 24.0).abs() < 0.1);
+                assert!(
+                    title.1.pos.x + title.1.galley.size().x <= title.0.right(),
+                    "{expected} exceeds close clip: {title:?}"
+                );
+            }
+        }
+    }
 }
