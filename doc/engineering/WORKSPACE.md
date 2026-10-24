@@ -31,6 +31,10 @@ endpoint; failed open/start does not consume a generation or claim an endpoint.
 The endpoint stays occupied through stopped-inbox draining and is released only
 when capture ownership is fully drained. Reconnect uses the same workspace
 admission, and cannot take another session's live or draining endpoint.
+Capture drain also requires observed reader-thread completion. An unexpectedly
+unwinding reader can close its data sender before a slow transport destructor
+returns; channel closure alone cannot release the endpoint or retained owner.
+The inbox retains the worker handle and polls completion without joining it.
 
 Send/Enter carries `CommandTarget { SessionId, ConnectionId }` captured from the
 rendered owner/connection. Workspace validates it before accessing the sender.

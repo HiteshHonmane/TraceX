@@ -13,6 +13,14 @@ reservation, cap accounting, query cancellation and stale-response rules.
 
 Both the custom window X and operating-system close event start the same application-owned shutdown sequence. Operating-system close is cancelled while the sequence runs. The coordinator requests capture stop once, disables automatic reconnect, and lets normal nonblocking polling drain already received records into retained history and autosave. It does not discard the capture inbox to make closing appear complete.
 
+Capture completion requires both drained records and observed reader-thread
+exit. Normal readers release the transport before publishing terminal status.
+During an unexpected unwind, sender closure may happen before transport cleanup;
+the retained worker handle prevents that closure from permitting early endpoint
+reuse or normal session/window close. No UI-thread join is performed. A controlled
+panic/held-destructor regression covers this failure path; it is not hardware
+qualification or a guarantee of recovering bytes lost inside a failed transport.
+
 After the capture inbox is fully drained, the controller queues the autosave `Finish` command behind pending payloads. Shutdown requires both the terminal `Finished` event and observed worker-thread completion; the UI never joins a worker. Accepted autosave writes and stop commands retain their FIFO order. In-flight session archive save/open operations must also complete before orderly close is allowed. A worker's successful finalization is not a guarantee against later filesystem or power failure.
 
 A modal reports progress without changing the log workspace layout. A capture error blocks close while the capture inbox/lifecycle is still owned; retained-history capacity blocking that drain also produces an explicit incomplete-close decision. Historical continuity warnings remain visible after capture has fully drained, but do not alone imply current pending work or force an incomplete-close decision. Unresolved autosave and archive failures still block close independently. A ten-second decision deadline also reports incomplete shutdown if capture, search, filesystem or storage work has not finished. This deadline bounds waiting for a user decision; it does not forcibly interrupt system calls or assert pending data was saved.

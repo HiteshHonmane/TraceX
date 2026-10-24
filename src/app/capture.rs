@@ -145,6 +145,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Owns queued, partially consumed and terminal records until explicitly popped.
 /// Terminal status may be observed early, but terminal records follow queued data.
 pub(super) struct CaptureInbox {
+    // Sender closure during unwind can precede slow transport destruction.
+    // Keep resource ownership until the worker has actually exited; never join
+    // it on the UI thread. None is used only by workerless test fixtures.
+    worker: Option<thread::JoinHandle<()>>,
     batches: Receiver<CaptureBatch>,
     usage: Arc<Mutex<CaptureUsage>>,
     slot: TerminalSlot,
@@ -191,7 +195,10 @@ impl CaptureInbox {
         self.current.as_ref().map(|batch| batch.sequence)
     }
     pub fn is_drained(&self) -> bool {
-        self.channel_closed
+        self.worker
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
+            && self.channel_closed
             && self.current.is_none()
             && self
                 .terminal
@@ -268,7 +275,8 @@ pub(super) fn start_reader(
     let (commands, command_rx) = mpsc::sync_channel(budget.command_capacity);
     let usage = Arc::new(Mutex::new(CaptureUsage::default()));
     let slot = Arc::new(Mutex::new(None));
-    let inbox = CaptureInbox {
+    let mut inbox = CaptureInbox {
+        worker: None,
         batches,
         usage: Arc::clone(&usage),
         slot: Arc::clone(&slot),
@@ -279,22 +287,24 @@ pub(super) fn start_reader(
         processed_records: 0,
         next_sequence: first_sequence,
     };
-    thread::Builder::new()
-        .name("tracex-capture".to_owned())
-        .spawn(move || {
-            read_stream(
-                port,
-                budget,
-                stop,
-                command_rx,
-                ReaderOutput {
-                    batches: sender,
-                    usage,
-                    slot,
-                },
-                first_sequence,
-            );
-        })?;
+    inbox.worker = Some(
+        thread::Builder::new()
+            .name("tracex-capture".to_owned())
+            .spawn(move || {
+                read_stream(
+                    port,
+                    budget,
+                    stop,
+                    command_rx,
+                    ReaderOutput {
+                        batches: sender,
+                        usage,
+                        slot,
+                    },
+                    first_sequence,
+                );
+            })?,
+    );
     Ok((inbox, commands))
 }
 
@@ -492,6 +502,7 @@ impl CaptureInbox {
             publish_terminal: true,
         };
         let inbox = Self {
+            worker: None,
             batches,
             usage,
             slot,

@@ -241,6 +241,7 @@ fn worker_sender_loss_without_terminal_drains_records_and_reports_unknown_contin
     sender.send(batch).unwrap();
     drop(sender);
     let mut inbox = CaptureInbox {
+        worker: None,
         batches,
         usage,
         slot: Arc::new(Mutex::new(None)),
@@ -311,6 +312,7 @@ fn command_partial_failure_keeps_final_received_tail_and_prefix_detail() {
         0,
     );
     let mut inbox = CaptureInbox {
+        worker: None,
         batches,
         usage,
         slot,
@@ -331,4 +333,59 @@ fn command_partial_failure_keeps_final_received_tail_and_prefix_detail() {
         })
     ));
     assert_eq!(drain(&mut inbox), ["tail"]);
+}
+
+#[test]
+fn unexpected_worker_unwind_retains_ownership_until_transport_cleanup_finishes() {
+    struct PanickingStream {
+        cleanup_started: mpsc::Sender<()>,
+        release_cleanup: Receiver<()>,
+    }
+    impl Read for PanickingStream {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            panic!("injected transport implementation failure");
+        }
+    }
+    impl Write for PanickingStream {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Drop for PanickingStream {
+        fn drop(&mut self) {
+            // Never panic during unwind; disconnect also releases this gate.
+            let _ = self.cleanup_started.send(());
+            let _ = self.release_cleanup.recv_timeout(Duration::from_secs(3));
+        }
+    }
+    let (cleanup_started, cleanup_wait) = mpsc::channel();
+    let (release_cleanup, cleanup_gate) = mpsc::channel();
+    let (mut inbox, _commands) = start_reader(
+        PanickingStream {
+            cleanup_started,
+            release_cleanup: cleanup_gate,
+        },
+        CaptureBudget::default(),
+        Arc::new(Mutex::new(false)),
+        0,
+    )
+    .unwrap();
+    cleanup_wait.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert_eq!(inbox.pop_record(), None);
+    assert_eq!(
+        inbox.terminal_reason(),
+        Some(&CaptureStopReason::WorkerEndedUnexpectedly)
+    );
+    let released_before_cleanup = inbox.is_drained();
+    // Release before asserting so the deliberate failure of the old code never
+    // strands a worker in a destructor or depends on the watchdog expiring.
+    release_cleanup.send(()).unwrap();
+    assert!(drain(&mut inbox).is_empty());
+    assert!(
+        !released_before_cleanup,
+        "sender closure must not release a transport still unwinding"
+    );
 }
